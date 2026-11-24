@@ -1,10 +1,10 @@
 /* KEEPER OF CHRONICLES - THE APP
- * Version 4.0 (build step 4: importing many pages at once)
+ * Version 5.0 (build step 5: relationships, maps, session notes, backups)
  * You do not need to change anything in this file. Your settings live in config.js.
  */
 'use strict';
 
-const APP_VERSION = '4.0';
+const APP_VERSION = '5.0';
 const API_URL = (window.KEEPER_API_URL || '').trim();
 
 const CATEGORIES = [
@@ -16,6 +16,7 @@ const CATEGORIES = [
   'Lore',
   'Crossover Universes',
   'Items & Artifacts',
+  'Maps',
   'Other'
 ];
 
@@ -28,6 +29,7 @@ const CATEGORY_ICONS = {
   'Lore': '📖',
   'Crossover Universes': '🌀',
   'Items & Artifacts': '🗝️',
+  'Maps': '🗺️',
   'Other': '✒️'
 };
 
@@ -72,6 +74,9 @@ const state = {
   pages: [],
   realities: [],
   events: [],
+  relations: [],
+  sessions: [],
+  backup: store.get('kc_backup', null),
   realityFilter: '',
   pagesLoadedAt: 0,
   offline: false,
@@ -161,6 +166,8 @@ async function logout() {
   state.pages = [];
   state.realities = [];
   state.events = [];
+  state.relations = [];
+  state.sessions = [];
   location.hash = '#/';
   render();
 }
@@ -173,6 +180,8 @@ async function loadBootstrap() {
   store.set('kc_user', data.user);
   store.set('kc_users', data.users);
   store.set('kc_chronicles', data.chronicles);
+  state.backup = data.backup || null;
+  store.set('kc_backup', state.backup);
   if (state.chronicleId && !currentChronicle()) chooseChronicle(null);
 }
 
@@ -198,6 +207,8 @@ function loadSavedChronicleData(id) {
   state.pages = id ? store.get('kc_pages_' + id, []) : [];
   state.realities = id ? store.get('kc_realities_' + id, []) : [];
   state.events = id ? store.get('kc_events_' + id, []) : [];
+  state.relations = id ? store.get('kc_relations_' + id, []) : [];
+  state.sessions = id ? store.get('kc_sessions_' + id, []) : [];
   state.realityFilter = id ? store.get('kc_rf_' + id, '') : '';
 }
 
@@ -217,6 +228,8 @@ async function loadPages() {
     state.pages = data.pages;
     state.realities = data.realities || [];
     state.events = data.events || [];
+    state.relations = data.relations || [];
+    state.sessions = data.sessions || [];
     state.pagesLoadedAt = Date.now();
     saveChronicleData();
     if (state.realityFilter && !realityById(state.realityFilter)) setRealityFilter('');
@@ -235,6 +248,8 @@ function saveChronicleData() {
   store.set('kc_pages_' + state.chronicleId, state.pages);
   store.set('kc_realities_' + state.chronicleId, state.realities);
   store.set('kc_events_' + state.chronicleId, state.events);
+  store.set('kc_relations_' + state.chronicleId, state.relations);
+  store.set('kc_sessions_' + state.chronicleId, state.sessions);
 }
 
 function isTyping() {
@@ -275,6 +290,7 @@ function rememberPage(page) {
 function forgetPage(id) {
   state.pages = state.pages.filter((p) => p.id !== id);
   state.pages.forEach((p) => { if (p.identityId === id) p.identityId = ''; });
+  state.relations = state.relations.filter((r) => r.fromId !== id && r.toId !== id);
   saveChronicleData();
 }
 
@@ -706,6 +722,11 @@ function blobToBase64(blob) {
 }
 
 async function uploadPicture(file) {
+  return (await uploadPictureFull(file)).id;
+}
+
+// Uploads a picture and returns its id, width and height.
+async function uploadPictureFull(file) {
   const loaded = await loadImageFile(file);
   try {
     const full = await shrinkTo(loaded.img, 2000, 0.85);
@@ -723,7 +744,7 @@ async function uploadPicture(file) {
     rememberImage(result.id + '_thumb', thumb.blob);
     imageCachePut(result.id + '_full', full.blob);
     imageCachePut(result.id + '_thumb', thumb.blob);
-    return result.id;
+    return { id: result.id, width: full.width, height: full.height };
   } finally {
     URL.revokeObjectURL(loaded.url);
   }
@@ -882,7 +903,7 @@ function render() {
   let content = '';
   let bind = () => {};
   switch (route.name) {
-    case 'p':         content = viewPage(route.id); bind = () => bindPage(route.id); break;
+    case 'p':         content = viewPage(route.id); bind = () => bindPage(route.id, route.query); break;
     case 'edit':      content = viewEditor(route.id, route.query); bind = () => bindEditor(route.id, route.query); break;
     case 'new':       content = viewEditor('', route.query); bind = () => bindEditor('', route.query); break;
     case 'c':         content = viewCategory(route.id); break;
@@ -895,6 +916,14 @@ function render() {
     case 'sheet':     content = viewSheetEditor(route.id, route.query); bind = () => bindSheetEditor(route.id, route.query); break;
     case 'settings':  content = viewSettings(); bind = () => bindSettings(); break;
     case 'import':    content = viewImport(); bind = () => bindImport(); break;
+    case 'rel':       content = viewRelationForm(route.id, route.query); bind = () => bindRelationForm(route.id, route.query); break;
+    case 'web':       content = viewWeb(route.id, route.query); bind = () => bindGraph(); break;
+    case 'tree':      content = viewTree(route.id, route.query); bind = () => bindGraph(); break;
+    case 'map':       content = viewMapEditor(route.id); bind = () => bindMapEditor(route.id); break;
+    case 'sessions':  content = viewSessions(); break;
+    case 'maps':      content = viewMaps(); break;
+    case 'session':   content = viewSession(route.id); bind = () => bindSession(route.id); break;
+    case 'session-edit': content = viewSessionForm(route.id, route.query); bind = () => bindSessionForm(route.id, route.query); break;
     default:          content = viewHome(); bind = () => bindHome();
   }
   app.innerHTML = shell(content, true);
@@ -929,9 +958,9 @@ function shell(content, withNav) {
     '<div id="offline-banner" class="offline-banner"' + (state.offline ? '' : ' hidden') + '>Offline: showing the copy saved on this phone. Editing is paused.</div>' +
     '<main class="view">' + content + '</main>' +
     (withNav && c ? '<nav class="bottombar">' +
-      tab(['home', 'c', 'p', 'realities', 'r', 'reality', 'sheet'], '#/', '⌂', 'Home') +
+      tab(['home', 'c', 'p', 'realities', 'r', 'reality', 'sheet', 'rel', 'web', 'tree', 'map', 'maps', 'import'], '#/', '⌂', 'Home') +
       tab(['search'], '#/search', '⌕', 'Search') +
-      tab(['timeline', 'event'], '#/timeline', '⏳', 'Timeline') +
+      tab(['timeline', 'event', 'sessions', 'session', 'session-edit'], '#/timeline', '⏳', 'Timeline') +
       tab(['new', 'edit'], '#/new', '＋', 'New page') +
       tab(['settings'], '#/settings', '⚙', 'Settings') +
     '</nav>' : '');
@@ -1154,6 +1183,12 @@ function viewHome() {
       : 'You are a <strong>player</strong> in this chronicle. Your GM is ' + esc(userName(c.gm)) + '.') + '</p>' +
     realityBar() +
     '<form id="home-search" class="search-row"><input name="q" type="search" placeholder="Search ' + pages.length + (pages.length === 1 ? ' page' : ' pages') + '…" aria-label="Search"></form>' +
+    '<nav class="quick-links">' +
+      '<a href="#/sessions"><span>📜</span>Session notes <small>' + state.sessions.filter(inFilter).length + '</small></a>' +
+      '<a href="#/maps"><span>🗺️</span>Maps <small>' + pages.filter((p) => p.map || p.category === 'Maps').length + '</small></a>' +
+      '<a href="#/web"><span>🕸</span>Connections <small>' + state.relations.filter(inFilter).length + '</small></a>' +
+      '<a href="#/timeline"><span>⏳</span>Timeline <small>' + state.events.filter(inFilter).length + '</small></a>' +
+    '</nav>' +
   '</section>';
 
   let special = '';
@@ -1199,7 +1234,11 @@ function viewHome() {
     : '<div class="card empty">No pages yet. Tap <strong>＋ New page</strong> below to write the first one.</div>') +
   '</section>';
 
-  return intro + special + categories + realities + myPrivate + recentHtml;
+  const latest = sortedSessions(state.sessions.filter(inFilter)).slice(0, 3);
+  const sessionsHtml = latest.length ? '<section><h2>📜 Latest sessions</h2>' + sessionsMiniList(latest) +
+    '<a class="btn small" href="#/sessions">All session notes</a> <a class="btn small" href="#/session-edit/new">＋ Write notes for a session</a></section>' : '';
+
+  return intro + special + sessionsHtml + categories + realities + myPrivate + recentHtml;
 }
 
 function bindHome() {
@@ -1322,6 +1361,7 @@ function viewPage(id) {
   const gallery = images.length > 1 ? '<section class="gallery-section"><h2>Pictures</h2><div class="gallery">' +
     images.slice(1).map((imgId) => picture(imgId, 'thumb', 'pic-gallery', true)).join('') + '</div></section>' : '';
 
+  const pageSessions = sessionsForPage(page);
   const addEventLink = '#/event/new?link=' + encodeURIComponent(page.title) + (page.realityId ? '&reality=' + encodeURIComponent(page.realityId) : '');
 
   return '<article class="narrow page">' +
@@ -1332,8 +1372,11 @@ function viewPage(id) {
     (page.sheet && String(page.content || '').length > 600 ? '<p><button type="button" class="btn small" id="jump-sheet">📜 Jump to the character sheet</button></p>' : '') +
     hiddenNotice +
     versionsHtml(page) +
+    mapSectionHtml(page) +
     '<div class="content">' + renderMarkdown(page.content) + '</div>' +
     sheetSectionForPage(page) +
+    relationsHtml(page) +
+    onMapsHtml(page) +
     gallery +
     gmNotes +
     '<section class="page-timeline"><h2>⏳ On the timeline</h2>' +
@@ -1343,19 +1386,25 @@ function viewPage(id) {
         : '<p class="muted small">No timeline events mention this page yet.</p>') +
       '<a class="btn small" href="' + addEventLink + '">＋ Add an event about ' + esc(page.title) + '</a>' +
     '</section>' +
+    '<section class="page-sessions"><h2>📜 In the session notes</h2>' +
+      (pageSessions.length ? sessionsMiniList(pageSessions) : '<p class="muted small">No session notes mention this page yet.</p>') +
+      '<a class="btn small" href="#/session-edit/new?page=' + encodeURIComponent(page.id) + (page.realityId ? '&reality=' + encodeURIComponent(page.realityId) : '') + '">＋ Write session notes</a>' +
+    '</section>' +
     (backlinks.length ? '<section class="backlinks"><h2>Pages that link here</h2><ul class="page-list">' +
       backlinks.map((p) => pageItem(p)).join('') + '</ul></section>' : '') +
     '<p class="muted small">Written by ' + esc(userName(page.author)) + ' · last changed ' + esc(formatDate(page.updated)) +
       (page.updatedBy ? ' by ' + esc(userName(page.updatedBy)) : '') + '</p>' +
     '<div class="row actions">' +
       '<a class="btn primary" href="#/edit/' + encodeURIComponent(page.id) + '">✎ Edit</a>' +
+      (!page.map ? '<a class="btn" href="#/map/' + encodeURIComponent(page.id) + '">🗺️ Add a map</a>' : '') +
       (page.canDelete ? '<button class="btn danger" id="delete-btn">Delete</button>' : '') +
     '</div>' +
   '</article>';
 }
 
-function bindPage(id) {
+function bindPage(id, query) {
   on('#reveal-btn', 'click', () => revealPage(id));
+  bindMapView(id, query);
   on('#jump-sheet', 'click', () => { const el = document.getElementById('sheet'); if (el) el.scrollIntoView({ behavior: 'smooth' }); });
   bindSheetView(id);
   on('#delete-btn', 'click', async () => {
@@ -1363,8 +1412,10 @@ function bindPage(id) {
     if (!page) return;
     if (state.offline) { toast('You are offline. Try again when you have internet.', true); return; }
     const versions = state.pages.filter((p) => p.identityId === id).length;
+    const relations = relationsOf(id).length;
     if (!confirm('Delete "' + page.title + '" for good? This cannot be undone.' +
-      (versions ? '\n\nThe ' + versions + ' version page(s) linked to it are kept, but lose their link.' : ''))) return;
+      (versions ? '\n\nThe ' + versions + ' version page(s) linked to it are kept, but lose their link.' : '') +
+      (relations ? '\n\nIts ' + relations + ' relationship(s) are deleted too.' : ''))) return;
     try {
       await api('deletePage', { id: id });
       forgetPage(id);
@@ -1682,9 +1733,23 @@ function prefixLine(textarea, prefix) {
 /* ------------------------------------------------------------------ */
 /* Screen: timeline                                                    */
 /* ------------------------------------------------------------------ */
+function timelineSession(x) {
+  const s = x.ev._session;
+  const r = realityById(s.realityId);
+  return '<li class="tl-event tl-session' + (s.visibility !== 'everyone' ? ' tl-hidden' : '') + '" id="ev-' + esc(s.id) + '" style="--rc:' +
+      (r ? safeColor(r.color) : 'var(--accent)') + '">' +
+    '<div class="tl-date">' + esc(x.when ? x.when.label : s.storyDate) + ' · <span class="tl-kind">📜 Session notes</span></div>' +
+    '<h3 class="tl-title"><a href="#/session/' + encodeURIComponent(s.id) + '">' + esc(sessionHeading(s)) + '</a> ' + visibilityBadge(s) + '</h3>' +
+    '<div class="muted small">' + (s.playedOn ? '🎲 Played ' + esc(formatPlayed(s.playedOn)) + ' ' : '') + realityChip(s.realityId, true) + '</div>' +
+    (s.text ? '<div class="tl-text muted small">' + esc(plainText(s.text).slice(0, 200)) + (plainText(s.text).length > 200 ? '…' : '') + '</div>' : '') +
+  '</li>';
+}
+
 function timelineEvent(x) {
+  if (x.ev._session) return timelineSession(x);
   const ev = x.ev;
   const r = realityById(ev.realityId);
+  const played = sessionsForEvent(ev);
   return '<li class="tl-event' + (ev.visibility !== 'everyone' ? ' tl-hidden' : '') + '" id="ev-' + esc(ev.id) + '" style="--rc:' +
       (r ? safeColor(r.color) : 'var(--accent)') + '">' +
     '<div class="tl-date">' + esc(x.when ? x.when.label : (ev.date || 'No date')) +
@@ -1692,6 +1757,8 @@ function timelineEvent(x) {
     '<h3 class="tl-title">' + esc(ev.title) + ' ' + visibilityBadge(ev) + '</h3>' +
     (ev.realityId ? '<div>' + realityChip(ev.realityId, true) + '</div>' : '') +
     '<div class="content tl-text">' + renderMarkdown(ev.text, '') + '</div>' +
+    (played.length ? '<div class="small tl-played">📜 Played in: ' + played.map((s) =>
+      '<a href="#/session/' + encodeURIComponent(s.id) + '">' + esc(sessionHeading(s)) + '</a>').join(', ') + '</div>' : '') +
     '<div class="tl-actions">' +
       '<a class="btn small" href="#/event/' + encodeURIComponent(ev.id) + '">✎ Edit</a>' +
       (ev.canReveal && ev.visibility === 'gm' ? ' <button class="btn small primary reveal-event" data-id="' + esc(ev.id) + '">Reveal</button>' : '') +
@@ -1699,8 +1766,16 @@ function timelineEvent(x) {
   '</li>';
 }
 
+function showSessionsOnTimeline() {
+  return store.get('kc_tl_sessions', true) !== false;
+}
+
 function viewTimeline() {
-  const list = sortedEvents(state.events.filter(inFilter));
+  const withSessions = showSessionsOnTimeline();
+  const sessionItems = withSessions ? state.sessions.filter(inFilter).filter((s) => parseStoryDate(s.storyDate)).map((s) => ({
+    id: s.id, date: s.storyDate, created: s.playedOn || s.created, title: sessionHeading(s), realityId: s.realityId, _session: s
+  })) : [];
+  const list = sortedEvents(state.events.filter(inFilter).concat(sessionItems));
   let html = '';
   let lastYear = null;
   list.forEach((x) => {
@@ -1716,12 +1791,17 @@ function viewTimeline() {
     '<h1>⏳ Timeline</h1>' +
     realityBar() +
     '<a class="btn primary block" href="#/event/new' + reality + '">＋ Add an event</a>' +
+    '<div class="row timeline-tools">' +
+      '<a class="btn small" href="#/sessions">📜 Session notes (' + state.sessions.filter(inFilter).length + ')</a>' +
+      '<label class="check small"><input type="checkbox" id="tl-sessions"' + (withSessions ? ' checked' : '') + '> Show session notes on the timeline</label>' +
+    '</div>' +
     (list.length ? '<ol class="timeline">' + html + '</ol>'
       : '<div class="card empty">No events yet' + (state.realityFilter ? ' in this reality' : '') + '. Add the first one: a birth, a battle, a death, a session.</div>') +
   '</div>';
 }
 
 function bindTimeline(query) {
+  on('#tl-sessions', 'change', (event) => { store.set('kc_tl_sessions', event.target.checked); render(); });
   on('.reveal-event', 'click', async (event) => {
     const ev = state.events.find((x) => x.id === event.currentTarget.dataset.id);
     if (!ev) return;
@@ -3077,6 +3157,1440 @@ function bindSheetEditor(pageId, query) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Relationships (version 5): "wife of", "sire of", "enemy of"…         */
+/* A relationship joins two pages and reads correctly from both sides.  */
+/* It can be true in every reality, or only in one.                    */
+/* ------------------------------------------------------------------ */
+const RELATION_PRESETS = [
+  ['Family', [
+    ['spouse', 'Wife of', 'Husband of'],
+    ['spouse', 'Husband of', 'Wife of'],
+    ['spouse', 'Spouse of', 'Spouse of'],
+    ['spouse', 'Betrothed to', 'Betrothed to'],
+    ['parent', 'Mother of', 'Child of'],
+    ['parent', 'Father of', 'Child of'],
+    ['parent', 'Parent of', 'Child of'],
+    ['child', 'Son of', 'Parent of'],
+    ['child', 'Daughter of', 'Parent of'],
+    ['child', 'Child of', 'Parent of'],
+    ['sibling', 'Brother of', 'Sibling of'],
+    ['sibling', 'Sister of', 'Sibling of'],
+    ['sibling', 'Sibling of', 'Sibling of'],
+    ['lover', 'Lover of', 'Lover of']
+  ]],
+  ['Blood and bonds', [
+    ['sire', 'Sire of', 'Childe of'],
+    ['childe', 'Childe of', 'Sire of'],
+    ['bond', 'Blood bound to', 'Regnant of'],
+    ['bond', 'Regnant of', 'Blood bound to'],
+    ['ghoul', 'Ghoul of', 'Domitor of'],
+    ['ghoul', 'Domitor of', 'Ghoul of'],
+    ['kin', 'Kinfolk of', 'Kinfolk of']
+  ]],
+  ['Friends and foes', [
+    ['ally', 'Ally of', 'Ally of'],
+    ['friend', 'Friend of', 'Friend of'],
+    ['enemy', 'Enemy of', 'Enemy of'],
+    ['enemy', 'Nemesis of', 'Nemesis of'],
+    ['rival', 'Rival of', 'Rival of']
+  ]],
+  ['Rank and groups', [
+    ['mentor', 'Mentor of', 'Student of'],
+    ['mentor', 'Student of', 'Mentor of'],
+    ['serves', 'Serves', 'Master of'],
+    ['serves', 'Master of', 'Serves'],
+    ['member', 'Member of', 'Has member'],
+    ['leader', 'Leader of', 'Led by'],
+    ['founder', 'Founder of', 'Founded by']
+  ]],
+  ['Places and things', [
+    ['place', 'Lives in', 'Home of'],
+    ['rules', 'Rules', 'Ruled by'],
+    ['owns', 'Owns', 'Owned by'],
+    ['made', 'Created', 'Created by']
+  ]]
+];
+
+const RELATION_ORDER = ['spouse', 'lover', 'parent', 'child', 'sibling', 'sire', 'childe', 'bond', 'ghoul', 'kin',
+  'ally', 'friend', 'enemy', 'rival', 'mentor', 'serves', 'leader', 'member', 'founder', 'place', 'rules', 'owns', 'made', 'other'];
+
+function relationColorClass(type) {
+  if (['parent', 'child', 'sibling', 'kin'].indexOf(type) >= 0) return 'rel-family';
+  if (['spouse', 'lover'].indexOf(type) >= 0) return 'rel-love';
+  if (['sire', 'childe', 'bond', 'ghoul'].indexOf(type) >= 0) return 'rel-blood';
+  if (['enemy', 'rival'].indexOf(type) >= 0) return 'rel-foe';
+  if (['ally', 'friend'].indexOf(type) >= 0) return 'rel-friend';
+  return 'rel-other';
+}
+
+function findPreset(label, reverse) {
+  for (let g = 0; g < RELATION_PRESETS.length; g++) {
+    const list = RELATION_PRESETS[g][1];
+    for (let i = 0; i < list.length; i++) {
+      if (list[i][1].toLowerCase() === String(label || '').toLowerCase() &&
+          (!reverse || list[i][2].toLowerCase() === String(reverse).toLowerCase())) return g + '.' + i;
+    }
+  }
+  return '';
+}
+
+function presetAt(value) {
+  const [g, i] = String(value || '').split('.').map(Number);
+  const group = RELATION_PRESETS[g];
+  return group && group[1][i] ? group[1][i] : null;
+}
+
+function relationsOf(pageId) {
+  return state.relations.filter((r) => r.fromId === pageId || r.toId === pageId);
+}
+
+// How a relationship reads from one of its two pages.
+function relationSide(rel, pageId) {
+  return rel.fromId === pageId
+    ? { label: rel.label, otherId: rel.toId }
+    : { label: rel.reverse || rel.label, otherId: rel.fromId };
+}
+
+function byRelation(a, b) {
+  const ta = RELATION_ORDER.indexOf(a.rel.type), tb = RELATION_ORDER.indexOf(b.rel.type);
+  return (ta < 0 ? 99 : ta) - (tb < 0 ? 99 : tb) || a.side.label.localeCompare(b.side.label) ||
+    String((pageById(a.side.otherId) || {}).title).localeCompare(String((pageById(b.side.otherId) || {}).title));
+}
+
+function relationRow(rel, subjectId, showSubject, editFrom) {
+  const side = relationSide(rel, subjectId);
+  const other = pageById(side.otherId);
+  const subject = pageById(subjectId);
+  if (!other) return '';
+  return '<li class="rel-row ' + relationColorClass(rel.type) + '">' +
+    (showSubject && subject ? '<a href="#/p/' + encodeURIComponent(subject.id) + '">' + esc(subject.title) + '</a> · ' : '') +
+    '<span class="rel-label">' + esc(side.label) + '</span> ' +
+    '<a class="rel-target" href="#/p/' + encodeURIComponent(other.id) + '">' + esc(other.title) + '</a> ' +
+    (rel.realityId ? realityChip(rel.realityId) + ' ' : '') + visibilityBadge(rel) +
+    (rel.note ? '<span class="rel-note">' + esc(rel.note) + '</span>' : '') +
+    '<a class="rel-edit" href="#/rel/' + encodeURIComponent(rel.id) + '?from=' + encodeURIComponent(editFrom || subjectId) + '" title="Change or delete" aria-label="Change relationship">✎</a>' +
+  '</li>';
+}
+
+function relationsHtml(page) {
+  const own = relationsOf(page.id).map((rel) => ({ rel: rel, side: relationSide(rel, page.id) })).sort(byRelation);
+  // A version also shows the relationships of the page that ties its versions together,
+  // when they are true in every reality or in this version's reality.
+  const identity = page.identityId ? pageById(page.identityId) : null;
+  const inherited = identity ? relationsOf(identity.id)
+    .filter((r) => !r.realityId || !page.realityId || r.realityId === page.realityId)
+    .map((rel) => ({ rel: rel, side: relationSide(rel, identity.id) })).sort(byRelation) : [];
+  // The page that ties versions together also lists the relationships of every version.
+  const versions = state.pages.filter((p) => p.identityId === page.id).sort(byReality);
+  const fromVersions = [];
+  versions.forEach((v) => relationsOf(v.id).forEach((rel) => fromVersions.push({ rel: rel, side: relationSide(rel, v.id), version: v })));
+
+  const total = own.length + inherited.length + fromVersions.length;
+  const hasLineage = (list) => list.some((x) => ['parent', 'child', 'spouse', 'sire', 'childe'].indexOf(x.rel.type) >= 0);
+  const lineage = hasLineage(own) || hasLineage(inherited) || hasLineage(fromVersions);
+  const treeId = own.length || !identity ? page.id : identity.id;
+  return '<section class="relations" id="relations"><h2>🔗 Relationships' + (total ? ' (' + total + ')' : '') + '</h2>' +
+    (own.length ? '<ul class="rel-list">' + own.map((x) => relationRow(x.rel, page.id, false)).join('') + '</ul>' : '') +
+    (inherited.length ? '<h3 class="rel-sub">For every version of <a href="#/p/' + encodeURIComponent(identity.id) + '">' + esc(identity.title) + '</a></h3>' +
+      '<ul class="rel-list">' + inherited.map((x) => relationRow(x.rel, identity.id, false, identity.id)).join('') + '</ul>' : '') +
+    (fromVersions.length ? '<h3 class="rel-sub">In the versions</h3><ul class="rel-list">' +
+      fromVersions.map((x) => relationRow(x.rel, x.version.id, true)).join('') + '</ul>' : '') +
+    (!total ? '<p class="muted small">No relationships yet. Add family, sires, allies and enemies to see them as a web or a family tree.</p>' : '') +
+    '<div class="row">' +
+      '<a class="btn small primary" href="#/rel/new?from=' + encodeURIComponent(page.id) + '">＋ Add a relationship</a>' +
+      (total ? '<a class="btn small" href="#/web/' + encodeURIComponent(page.id) + '">🕸 Web of connections</a>' : '') +
+      (lineage ? '<a class="btn small" href="#/tree/' + encodeURIComponent(treeId) + '">🌳 Family tree</a>' : '') +
+    '</div>' +
+  '</section>';
+}
+
+/* Screen: add or change a relationship ------------------------------ */
+function relationDraft(id, query) {
+  const existing = id && id !== 'new' ? state.relations.find((r) => r.id === id) : null;
+  if (existing) {
+    const subjectId = query.from === existing.toId ? existing.toId : existing.fromId;
+    const flipped = subjectId === existing.toId;
+    return {
+      existing: existing, subjectId: subjectId,
+      label: flipped ? (existing.reverse || existing.label) : existing.label,
+      reverse: flipped ? existing.label : (existing.reverse || existing.label),
+      otherId: flipped ? existing.fromId : existing.toId,
+      type: existing.type, realityId: existing.realityId, visibility: existing.visibility, note: existing.note || ''
+    };
+  }
+  const subject = pageById(query.from);
+  const other = pageById(query.to);
+  const hidden = (subject && subject.visibility !== 'everyone') || (other && other.visibility !== 'everyone');
+  return {
+    existing: null, subjectId: subject ? subject.id : '', label: '', reverse: '', otherId: other ? other.id : '',
+    type: '', realityId: query.reality || (subject && subject.realityId) || '',
+    visibility: hidden && isGM() ? 'gm' : 'everyone', note: ''
+  };
+}
+
+function pageOptionsList(id, excludeId) {
+  return '<datalist id="' + id + '">' + state.pages.filter((p) => p.id !== excludeId).sort(byTitle)
+    .map((p) => '<option value="' + esc(p.title) + '">').join('') + '</datalist>';
+}
+
+function viewRelationForm(id, query) {
+  const d = relationDraft(id, query);
+  if (id && id !== 'new' && !d.existing) {
+    return '<div class="narrow"><h1>Relationship not found</h1><p class="muted">It may have been deleted.</p><a class="btn" href="#/">Back to home</a></div>';
+  }
+  const subject = pageById(d.subjectId);
+  const other = pageById(d.otherId);
+  const preset = d.label ? findPreset(d.label, d.reverse) : '';
+  const custom = !!d.label && !preset;
+  const mayChangeVisibility = !d.existing || d.existing.canSeeSecrets;
+  const visOptions = ['everyone', 'gm', 'private'].filter((v) => v !== 'gm' || isGM() || d.visibility === 'gm');
+  const back = subject ? '#/p/' + encodeURIComponent(subject.id) : '#/';
+  return '<div class="narrow">' +
+    (subject ? '<p class="crumbs"><a href="' + back + '">' + esc(subject.title) + '</a> ›</p>' : '') +
+    '<h1>' + (d.existing ? 'Change relationship' : 'New relationship') + '</h1>' +
+    '<form id="rel-form" class="form keep-open">' +
+      (subject
+        ? '<p class="rel-subject"><strong>' + esc(subject.title) + '</strong> ' + realityChip(subject.realityId) + ' is…</p>'
+        : '<label>Who?<input name="subject" list="rel-pages" required placeholder="Type a page name" autocomplete="off"></label>') +
+      '<label>Relationship<select name="preset">' +
+        '<option value="">— Choose —</option>' +
+        RELATION_PRESETS.map((g, gi) => '<optgroup label="' + esc(g[0]) + '">' + g[1].map((p, pi) =>
+          '<option value="' + gi + '.' + pi + '"' + (preset === gi + '.' + pi ? ' selected' : '') + '>' + esc(p[1]) +
+          (p[2] !== p[1] ? ' (the other way: ' + esc(p[2]) + ')' : '') + '</option>').join('') + '</optgroup>').join('') +
+        '<option value="custom"' + (custom ? ' selected' : '') + '>Something else… (type your own)</option>' +
+      '</select></label>' +
+      '<div id="rel-custom"' + (custom ? '' : ' hidden') + ' class="two-col">' +
+        '<label>Your own words<input name="label" maxlength="60" value="' + esc(custom ? d.label : '') + '" placeholder="e.g. Sworn protector of"></label>' +
+        '<label>The other way round <span class="hint">optional</span><input name="reverse" maxlength="60" value="' + esc(custom ? d.reverse : '') + '" placeholder="e.g. Protected by"></label>' +
+      '</div>' +
+      '<label>…of whom (or what)?<input name="other" list="rel-pages" required value="' + esc(other ? other.title : '') + '" placeholder="Type a page name" autocomplete="off">' +
+        '<span class="hint">If there is no page with that name yet, you can create an empty one.</span></label>' +
+      pageOptionsList('rel-pages', d.subjectId) +
+      '<div class="two-col">' +
+        '<label>True in which reality?<select name="realityId">' + realityOptions(d.realityId, '— Every reality —') + '</select>' +
+          '<span class="hint">Choose one reality if it is only true there, for example a marriage that only happened in one world.</span></label>' +
+        '<label>Who can see it?<select name="visibility"' + (mayChangeVisibility ? '' : ' disabled') + '>' +
+          visOptions.map((v) => '<option value="' + v + '"' + (v === d.visibility ? ' selected' : '') + '>' + VISIBILITY_LABELS[v] + '</option>').join('') +
+        '</select><span class="hint">Players only ever see it if they can see both pages.</span></label>' +
+      '</div>' +
+      '<label>Note <span class="hint">optional · e.g. married 1453, embraced in Vienna</span><input name="note" maxlength="2000" value="' + esc(d.note) + '"></label>' +
+      '<p class="rel-preview" id="rel-preview"></p>' +
+      '<div class="row actions sticky-actions">' +
+        '<button class="btn primary" type="submit">Save</button>' +
+        '<a class="btn" href="' + back + '">Cancel</a>' +
+        (d.existing && d.existing.canDelete ? '<button class="btn danger" type="button" id="delete-rel">Delete</button>' : '') +
+      '</div>' +
+    '</form>' +
+  '</div>';
+}
+
+function bindRelationForm(id, query) {
+  const form = $('#rel-form');
+  if (!form) return;
+  const d = relationDraft(id, query);
+  const chosen = () => {
+    if (form.preset.value === 'custom') {
+      const label = form.label.value.trim();
+      return { type: 'other', label: label, reverse: form.reverse.value.trim() || label };
+    }
+    const p = presetAt(form.preset.value);
+    return p ? { type: p[0], label: p[1], reverse: p[2] } : null;
+  };
+  const preview = () => {
+    const c = chosen();
+    const subjectTitle = d.subjectId ? (pageById(d.subjectId) || {}).title : form.subject.value.trim();
+    const otherTitle = form.other.value.trim();
+    $('#rel-preview').innerHTML = c && c.label && subjectTitle && otherTitle
+      ? 'Reads as: <strong>' + esc(subjectTitle) + '</strong> is ' + esc(c.label.toLowerCase()) + ' <strong>' + esc(otherTitle) + '</strong>' +
+        ', and <strong>' + esc(otherTitle) + '</strong> is ' + esc(c.reverse.toLowerCase()) + ' <strong>' + esc(subjectTitle) + '</strong>.'
+      : '';
+  };
+  form.preset.addEventListener('change', () => { $('#rel-custom').hidden = form.preset.value !== 'custom'; preview(); });
+  form.addEventListener('input', preview);
+  preview();
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (state.offline) { toast('You are offline. Try again when you have internet.', true); return; }
+    const c = chosen();
+    if (!c || !c.label) { toast('Please choose what kind of relationship this is.', true); return; }
+    const subject = d.subjectId ? pageById(d.subjectId) : findPageByTitle(form.subject.value);
+    if (!subject) { toast('There is no page called "' + form.subject.value.trim() + '".', true); return; }
+    const otherTitle = form.other.value.trim();
+    if (!otherTitle) { toast('Please type the name of the other page.', true); return; }
+    if (/[[\]|]/.test(otherTitle)) { toast('A page title cannot contain [ ] or |', true); return; }
+    const button = $('button[type=submit]', form);
+    button.disabled = true;
+    try {
+      let other = findPageByTitle(otherTitle);
+      if (!other) {
+        if (!confirm('There is no page called "' + otherTitle + '" yet.\n\nCreate an empty page with that name now? You can write it later.')) { button.disabled = false; return; }
+        const created = await api('savePage', { page: {
+          chronicleId: state.chronicleId, title: otherTitle, category: subject.category, tags: '',
+          visibility: subject.visibility === 'private' ? 'private' : (subject.visibility === 'gm' && isGM() ? 'gm' : 'everyone'),
+          content: '', realityId: form.realityId.value || subject.realityId || '', status: '', images: []
+        } });
+        rememberPage(created);
+        other = created;
+      }
+      if (other.id === subject.id) throw new Error('A page cannot have a relationship with itself.');
+      const saved = await api('saveRelation', { relation: {
+        id: d.existing ? d.existing.id : '',
+        chronicleId: state.chronicleId,
+        fromId: subject.id, toId: other.id,
+        type: c.type, label: c.label, reverse: c.reverse,
+        realityId: form.realityId.value, visibility: form.visibility.value, note: form.note.value
+      } });
+      rememberItem('relations', saved);
+      toast('Relationship saved.');
+      go('#/p/' + encodeURIComponent(subject.id));
+    } catch (e) {
+      if (e instanceof NetworkError) setOffline(true);
+      toast(e.message, true);
+      button.disabled = false;
+    }
+  });
+
+  on('#delete-rel', 'click', async () => {
+    if (!d.existing) return;
+    if (state.offline) { toast('You are offline. Try again when you have internet.', true); return; }
+    if (!confirm('Delete this relationship? The two pages stay as they are.')) return;
+    try {
+      await api('deleteRelation', { id: d.existing.id });
+      state.relations = state.relations.filter((r) => r.id !== d.existing.id);
+      saveChronicleData();
+      toast('Relationship deleted.');
+      go('#/p/' + encodeURIComponent(d.subjectId));
+    } catch (e) { toast(e.message, true); }
+  });
+}
+
+/* Web of connections and family tree -------------------------------- */
+let graphZoom = 1;
+
+// Relationships to draw. When one reality is chosen, a page that ties versions
+// together is replaced by its version in that reality, so each person shows once.
+function graphEdges() {
+  const filter = state.realityFilter;
+  const canon = (id) => {
+    if (!filter) return id;
+    const p = pageById(id);
+    if (!p || p.realityId) return id;
+    const vs = state.pages.filter((v) => v.identityId === id && v.realityId === filter);
+    return vs.length === 1 ? vs[0].id : id;
+  };
+  const edges = [];
+  state.relations.forEach((rel) => {
+    if (!inFilter(rel)) return;
+    const a = pageById(rel.fromId), b = pageById(rel.toId);
+    if (!a || !b || !inFilter(a) || !inFilter(b)) return;
+    const from = canon(rel.fromId), to = canon(rel.toId);
+    if (from === to) return;
+    edges.push({ rel: rel, from: from, to: to });
+  });
+  return { edges: edges, canon: canon };
+}
+
+function graphLabel(title, max) {
+  const t = String(title || '');
+  return t.length > max ? t.slice(0, max - 1) + '…' : t;
+}
+
+function nodeColor(page) {
+  const r = page ? realityById(page.realityId) : null;
+  return r ? safeColor(r.color) : '#c9a45c';
+}
+
+function forceLayout(ids, edges, centerId) {
+  const n = ids.length;
+  const index = {};
+  ids.forEach((id, i) => { index[id] = i; });
+  const k = 120;
+  const pos = ids.map((id, i) => {
+    if (id === centerId) return { x: 0, y: 0 };
+    const angle = (i / n) * Math.PI * 2;
+    const radius = k * (1 + Math.sqrt(n) / 2) * (0.7 + (i % 3) * 0.15);
+    return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
+  });
+  const links = edges.map((e) => [index[e.from], index[e.to]]).filter((l) => l[0] !== undefined && l[1] !== undefined);
+  const steps = 350;
+  for (let step = 0; step < steps; step++) {
+    const temp = k * 1.5 * (1 - step / steps) + 1;
+    const disp = pos.map(() => ({ x: 0, y: 0 }));
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        let dx = pos[i].x - pos[j].x, dy = pos[i].y - pos[j].y;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 0.01) { dx = (i - j) * 0.1 + 0.1; dy = 0.1; dist = Math.sqrt(dx * dx + dy * dy); }
+        const f = (k * k) / dist;
+        disp[i].x += (dx / dist) * f; disp[i].y += (dy / dist) * f;
+        disp[j].x -= (dx / dist) * f; disp[j].y -= (dy / dist) * f;
+      }
+    }
+    links.forEach(([a, b]) => {
+      const dx = pos[a].x - pos[b].x, dy = pos[a].y - pos[b].y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+      const f = (dist * dist) / k;
+      disp[a].x -= (dx / dist) * f; disp[a].y -= (dy / dist) * f;
+      disp[b].x += (dx / dist) * f; disp[b].y += (dy / dist) * f;
+    });
+    for (let i = 0; i < n; i++) {
+      disp[i].x -= pos[i].x * 0.05; disp[i].y -= pos[i].y * 0.05; // keep everything together
+      if (ids[i] === centerId) continue;
+      const len = Math.sqrt(disp[i].x * disp[i].x + disp[i].y * disp[i].y) || 1;
+      pos[i].x += (disp[i].x / len) * Math.min(len, temp);
+      pos[i].y += (disp[i].y / len) * Math.min(len, temp);
+    }
+  }
+  const out = {};
+  ids.forEach((id, i) => { out[id] = pos[i]; });
+  return out;
+}
+
+function graphSvg(content, box) {
+  const w = Math.max(320, box.maxX - box.minX), h = Math.max(240, box.maxY - box.minY);
+  return '<div class="graph-wrap"><svg class="graph" xmlns="http://www.w3.org/2000/svg" viewBox="' +
+      [box.minX, box.minY, w, h].map((v) => Math.round(v)).join(' ') + '" style="width:' + Math.round(graphZoom * 100) + '%">' +
+    '<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">' +
+      '<path d="M0,0 L10,5 L0,10 z" class="arrow-head"></path></marker></defs>' +
+    content + '</svg></div>';
+}
+
+function graphToolbar(kind, id, query) {
+  const page = pageById(id);
+  const depth = query.depth || '2';
+  const tab = (href, label, active) => '<a class="btn small' + (active ? ' primary' : '') + '" href="' + href + '">' + label + '</a>';
+  return '<div class="row graph-tools">' +
+    (page ? tab('#/web/' + encodeURIComponent(id) + '?depth=' + depth, '🕸 Web', kind === 'web') +
+      tab('#/tree/' + encodeURIComponent(id), '🌳 Family tree', kind === 'tree' && query.line !== 'sire') +
+      tab('#/tree/' + encodeURIComponent(id) + '?line=sire', '🩸 Sire line', kind === 'tree' && query.line === 'sire') : '') +
+    '<span class="zoom-btns"><button type="button" class="btn small" data-graph-zoom="-1" aria-label="Smaller">−</button>' +
+      '<button type="button" class="btn small" data-graph-zoom="1" aria-label="Bigger">＋</button></span>' +
+  '</div>';
+}
+
+function viewWeb(id, query) {
+  const center = id ? pageById(id) : null;
+  if (id && !center) return '<div class="narrow"><h1>Page not found</h1><a class="btn" href="#/">Back to home</a></div>';
+  const { edges, canon } = graphEdges();
+  const centerId = center ? canon(center.id) : '';
+  let nodeIds;
+  let used = edges;
+  if (center) {
+    const maxDepth = query.depth === 'all' ? 99 : Math.max(1, Math.min(4, Number(query.depth) || 2));
+    const seen = {};
+    seen[centerId] = 0;
+    let frontier = [centerId];
+    for (let level = 1; level <= maxDepth && frontier.length; level++) {
+      const next = [];
+      edges.forEach((e) => {
+        frontier.forEach((f) => {
+          const o = e.from === f ? e.to : e.to === f ? e.from : null;
+          if (o && seen[o] === undefined) { seen[o] = level; next.push(o); }
+        });
+      });
+      frontier = next;
+    }
+    nodeIds = Object.keys(seen);
+    used = edges.filter((e) => seen[e.from] !== undefined && seen[e.to] !== undefined);
+  } else {
+    const set = {};
+    edges.forEach((e) => { set[e.from] = true; set[e.to] = true; });
+    nodeIds = Object.keys(set);
+  }
+  nodeIds = nodeIds.slice(0, 250);
+  const title = center ? '🕸 ' + esc(center.title) : '🕸 Web of connections';
+  const depthPicker = center ? '<div class="row depth-row"><span class="muted small">How far:</span>' +
+    ['1', '2', '3', 'all'].map((d) => '<a class="rchip' + ((query.depth || '2') === d ? ' active' : '') + '" href="#/web/' +
+      encodeURIComponent(id) + '?depth=' + d + '">' + (d === 'all' ? 'Everyone' : d + (d === '1' ? ' step' : ' steps')) + '</a>').join('') + '</div>' : '';
+  let body;
+  if (!used.length) {
+    body = '<div class="card empty">' + (center
+      ? 'No relationships ' + (state.realityFilter ? 'in this reality ' : '') + 'for ' + esc(center.title) + ' yet. <a href="#/rel/new?from=' + encodeURIComponent(center.id) + '">Add one</a>.'
+      : 'No relationships ' + (state.realityFilter ? 'in this reality ' : '') + 'yet. Open a page and tap <strong>＋ Add a relationship</strong>.') + '</div>';
+  } else {
+    const pos = forceLayout(nodeIds, used, centerId);
+    const box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    nodeIds.forEach((nid) => {
+      const p = pos[nid];
+      box.minX = Math.min(box.minX, p.x - 90); box.maxX = Math.max(box.maxX, p.x + 90);
+      box.minY = Math.min(box.minY, p.y - 40); box.maxY = Math.max(box.maxY, p.y + 50);
+    });
+    // Two pages with several relationships: spread the labels apart
+    const pairCount = {};
+    let svg = '<g class="edges">';
+    used.forEach((e) => {
+      const a = pos[e.from], b = pos[e.to];
+      const key = [e.from, e.to].sort().join('|');
+      const nth = pairCount[key] = (pairCount[key] || 0) + 1;
+      const symmetric = (e.rel.reverse || e.rel.label) === e.rel.label;
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 + (nth - 1) * 15;
+      // stop the line at the edge of the circle so the arrow shows
+      const dx = b.x - a.x, dy = b.y - a.y, dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const r = e.to === centerId ? 22 : 15;
+      svg += '<line class="edge ' + relationColorClass(e.rel.type) + (e.rel.visibility !== 'everyone' ? ' edge-hidden' : '') + '" x1="' + a.x.toFixed(1) + '" y1="' + a.y.toFixed(1) +
+        '" x2="' + (b.x - dx / dist * r).toFixed(1) + '" y2="' + (b.y - dy / dist * r).toFixed(1) + '"' + (symmetric ? '' : ' marker-end="url(#arrow)"') + '></line>' +
+        '<text class="edge-label" x="' + mx.toFixed(1) + '" y="' + my.toFixed(1) + '">' + esc(graphLabel(e.rel.label, 22)) + '</text>';
+    });
+    svg += '</g><g class="nodes">';
+    nodeIds.forEach((nid) => {
+      const p = pos[nid];
+      const page = pageById(nid);
+      if (!page) return;
+      const big = nid === centerId;
+      svg += '<a href="#/p/' + encodeURIComponent(nid) + '" class="node' + (big ? ' center' : '') + '">' +
+        '<circle cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="' + (big ? 22 : 15) + '" style="fill:' + nodeColor(page) + '"></circle>' +
+        '<text class="node-label" x="' + p.x.toFixed(1) + '" y="' + (p.y + (big ? 38 : 30)).toFixed(1) + '">' + esc(graphLabel(page.title, 26)) + '</text>' +
+      '</a>';
+    });
+    svg += '</g>';
+    body = graphSvg(svg, box) +
+      '<p class="muted small">Tap a name to open its page. Arrows point from the first page to the second: <em>A → Wife of → B</em> means A is the wife of B. Lines: ' +
+      '<span class="legend rel-love">love</span> <span class="legend rel-family">family</span> <span class="legend rel-blood">blood</span> ' +
+      '<span class="legend rel-friend">friends</span> <span class="legend rel-foe">foes</span> <span class="legend rel-other">other</span>. Dashed lines are hidden from players.</p>';
+  }
+  return '<div class="narrow wide-graph">' +
+    (center ? '<p class="crumbs"><a href="#/p/' + encodeURIComponent(center.id) + '">' + esc(center.title) + '</a> ›</p>' : '<p class="crumbs"><a href="#/">Home</a> ›</p>') +
+    '<h1>' + title + '</h1>' +
+    realityBar() + graphToolbar('web', id, query) + depthPicker + body +
+  '</div>';
+}
+
+// A family tree (parents above, children below, spouses side by side), or a sire line.
+function viewTree(id, query) {
+  const center = pageById(id);
+  if (!center) return '<div class="narrow"><h1>Page not found</h1><a class="btn" href="#/">Back to home</a></div>';
+  const sireLine = query.line === 'sire';
+  const { edges, canon } = graphEdges();
+  const centerId = canon(center.id);
+  const parentsOf = {}, childrenOf = {}, spousesOf = {};
+  const add = (map, a, b) => { (map[a] = map[a] || []).indexOf(b) < 0 && map[a].push(b); };
+  edges.forEach((e) => {
+    const t = e.rel.type;
+    let parent = null, child = null;
+    if (sireLine) {
+      if (t === 'sire') { parent = e.from; child = e.to; } else if (t === 'childe') { parent = e.to; child = e.from; }
+    } else {
+      if (t === 'parent') { parent = e.from; child = e.to; } else if (t === 'child') { parent = e.to; child = e.from; }
+      if (t === 'spouse') { add(spousesOf, e.from, e.to); add(spousesOf, e.to, e.from); }
+    }
+    if (parent) { add(parentsOf, child, parent); add(childrenOf, parent, child); }
+  });
+  // Walk out from the person: parents one row up, children one row down, spouses on the same row
+  const gen = {};
+  gen[centerId] = 0;
+  const order = [centerId];
+  const queue = [[centerId, 0]];
+  while (queue.length && order.length < 120) {
+    const [nid, steps] = queue.shift();
+    if (steps >= 6) continue;
+    const visit = (other, g) => {
+      if (gen[other] !== undefined || !pageById(other)) return;
+      gen[other] = g; order.push(other); queue.push([other, steps + 1]);
+    };
+    (parentsOf[nid] || []).forEach((p) => visit(p, gen[nid] - 1));
+    (spousesOf[nid] || []).forEach((s) => visit(s, gen[nid]));
+    (childrenOf[nid] || []).forEach((c) => visit(c, gen[nid] + 1));
+  }
+  const rows = {};
+  order.forEach((nid) => { (rows[gen[nid]] = rows[gen[nid]] || []).push(nid); });
+  const levels = Object.keys(rows).map(Number).sort((a, b) => a - b);
+  // Order each row by where the parents (going down) or children (going up) are
+  const place = {};
+  const index = () => levels.forEach((g) => rows[g].forEach((nid, i) => { place[nid] = i - rows[g].length / 2; }));
+  index();
+  const avg = (list) => { const xs = (list || []).filter((x) => place[x] !== undefined).map((x) => place[x]); return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null; };
+  for (let pass = 0; pass < 4; pass++) {
+    const seq = pass % 2 ? levels.slice().reverse() : levels;
+    seq.forEach((g) => {
+      const keyed = rows[g].map((nid, i) => ({ nid: nid, k: avg(pass % 2 ? childrenOf[nid] : parentsOf[nid]), i: i }));
+      keyed.sort((a, b) => (a.k === null ? a.i - rows[g].length / 2 : a.k) - (b.k === null ? b.i - rows[g].length / 2 : b.k) || a.i - b.i);
+      rows[g] = keyed.map((x) => x.nid);
+      index();
+    });
+  }
+  // Keep each couple side by side
+  levels.forEach((g) => {
+    const row = rows[g];
+    for (let i = 0; i < row.length; i++) {
+      (spousesOf[row[i]] || []).forEach((s) => {
+        const j = row.indexOf(s);
+        if (j > i + 1) { row.splice(j, 1); row.splice(i + 1, 0, s); }
+      });
+    }
+  });
+  const W = 168, H = 56, GX = 28, GY = 70;
+  const pos = {};
+  levels.forEach((g, li) => {
+    rows[g].forEach((nid, i) => { pos[nid] = { x: (i - (rows[g].length - 1) / 2) * (W + GX), y: li * (H + GY) }; });
+  });
+  const count = order.length;
+  let body;
+  if (count < 2) {
+    body = '<div class="card empty">No ' + (sireLine ? 'sire or childer' : 'parents, children or spouses') + ' are recorded for ' + esc(center.title) +
+      (state.realityFilter ? ' in this reality' : '') + ' yet. Add relationships such as ' +
+      (sireLine ? '<em>Sire of</em> or <em>Childe of</em>' : '<em>Mother of</em>, <em>Son of</em> or <em>Wife of</em>') +
+      '. <a href="#/rel/new?from=' + encodeURIComponent(center.id) + '">Add one</a>.</div>';
+  } else {
+    const box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    order.forEach((nid) => {
+      const p = pos[nid];
+      box.minX = Math.min(box.minX, p.x - W / 2 - 20); box.maxX = Math.max(box.maxX, p.x + W / 2 + 20);
+      box.minY = Math.min(box.minY, p.y - 20); box.maxY = Math.max(box.maxY, p.y + H + 20);
+    });
+    let svg = '<g class="edges">';
+    const drawn = {};
+    order.forEach((nid) => {
+      (spousesOf[nid] || []).forEach((s) => {
+        const key = [nid, s].sort().join('|');
+        if (drawn[key] || !pos[s] || gen[s] !== gen[nid]) return;
+        drawn[key] = true;
+        const a = pos[nid], b = pos[s];
+        const left = a.x < b.x ? a : b, right = a.x < b.x ? b : a;
+        svg += '<line class="edge rel-love tree-couple" x1="' + (left.x + W / 2) + '" y1="' + (left.y + H / 2) + '" x2="' + (right.x - W / 2) + '" y2="' + (right.y + H / 2) + '"></line>';
+      });
+    });
+    order.forEach((child) => {
+      const parents = (parentsOf[child] || []).filter((p) => pos[p] && gen[p] === gen[child] - 1);
+      if (!parents.length) return;
+      const c = pos[child];
+      // Two parents who are a couple: the line starts between them
+      let startX = pos[parents[0]].x, startY = pos[parents[0]].y + H;
+      if (parents.length === 2 && (spousesOf[parents[0]] || []).indexOf(parents[1]) >= 0) {
+        startX = (pos[parents[0]].x + pos[parents[1]].x) / 2; startY = pos[parents[0]].y + H / 2;
+        svg += treeLine(startX, startY, c.x, c.y, sireLine);
+      } else {
+        parents.forEach((p) => { svg += treeLine(pos[p].x, pos[p].y + H, c.x, c.y, sireLine); });
+      }
+    });
+    svg += '</g><g class="nodes">';
+    order.forEach((nid) => {
+      const page = pageById(nid);
+      const p = pos[nid];
+      const r = realityById(page.realityId);
+      svg += '<a href="#/p/' + encodeURIComponent(nid) + '" class="tree-node' + (nid === centerId ? ' center' : '') + '">' +
+        '<rect x="' + (p.x - W / 2) + '" y="' + p.y + '" width="' + W + '" height="' + H + '" rx="10"></rect>' +
+        '<rect class="tree-band" x="' + (p.x - W / 2) + '" y="' + p.y + '" width="' + W + '" height="5" style="fill:' + nodeColor(page) + '"></rect>' +
+        '<text class="tree-title" x="' + p.x + '" y="' + (p.y + 27) + '">' + esc(graphLabel(page.title, 21)) + '</text>' +
+        '<text class="tree-sub" x="' + p.x + '" y="' + (p.y + 45) + '">' + esc(graphLabel([r ? r.name : '', page.status].filter(Boolean).join(' · '), 26)) + '</text>' +
+      '</a>';
+    });
+    svg += '</g>';
+    body = graphSvg(svg, box) + '<p class="muted small">Tap a name to open its page. ' +
+      (sireLine ? 'Sires are above their childer.' : 'Parents are above their children; a pink line joins a couple.') +
+      ' Only relationships such as ' + (sireLine ? '<em>Sire of</em> and <em>Childe of</em>' : '<em>Mother of</em>, <em>Son of</em> and <em>Wife of</em>') + ' are used here; the web shows everything.</p>';
+  }
+  return '<div class="narrow wide-graph">' +
+    '<p class="crumbs"><a href="#/p/' + encodeURIComponent(center.id) + '">' + esc(center.title) + '</a> ›</p>' +
+    '<h1>' + (sireLine ? '🩸 Sire line' : '🌳 Family tree') + ': ' + esc(center.title) + '</h1>' +
+    realityBar() + graphToolbar('tree', id, query) + body +
+  '</div>';
+}
+
+function treeLine(x1, y1, x2, y2, blood) {
+  const mid = y1 + (y2 - y1) / 2;
+  return '<path class="edge ' + (blood ? 'rel-blood' : 'rel-family') + '" d="M' + x1 + ',' + y1 + ' V' + mid + ' H' + x2 + ' V' + y2 + '"></path>';
+}
+
+function bindGraph() {
+  on('[data-graph-zoom]', 'click', (event) => {
+    const step = Number(event.currentTarget.dataset.graphZoom);
+    graphZoom = Math.max(0.5, Math.min(4, graphZoom * (step > 0 ? 1.5 : 1 / 1.5)));
+    const svg = $('svg.graph');
+    if (svg) svg.style.width = Math.round(graphZoom * 100) + '%';
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Maps with pins (version 5). Any page can carry a map: a picture plus  */
+/* pins. A pin can link to a page, such as a city, a haven or a battle.  */
+/* ------------------------------------------------------------------ */
+let mapZoom = 1;
+
+function pinTarget(pin) {
+  return pin.pageId ? pageById(pin.pageId) : null;
+}
+
+function pinTitle(pin) {
+  const target = pinTarget(pin);
+  return pin.label || (target ? target.title : 'Unnamed pin');
+}
+
+function pinColor(pin) {
+  if (pin.color) return safeColor(pin.color);
+  const target = pinTarget(pin);
+  const r = target ? realityById(target.realityId) : null;
+  return r ? safeColor(r.color) : '#e0565b';
+}
+
+function pinHtml(pin, selected) {
+  return '<button type="button" class="pin' + (pin.gm ? ' pin-gm' : '') + (selected ? ' selected' : '') + '" data-pin="' + esc(pin.id) + '" ' +
+      'style="left:' + (pin.x * 100).toFixed(2) + '%;top:' + (pin.y * 100).toFixed(2) + '%;--pc:' + pinColor(pin) + '" title="' + esc(pinTitle(pin)) + '">' +
+    '<span class="pin-dot"></span><span class="pin-label">' + esc(graphLabel(pinTitle(pin), 28)) + (pin.gm ? ' 🔒' : '') + '</span>' +
+  '</button>';
+}
+
+function mapCanvasHtml(map, selectedId, editing) {
+  const ratio = map.width && map.height ? map.width + ' / ' + map.height : '4 / 3';
+  return '<div class="map-wrap' + (editing ? ' editing' : '') + '"><div class="map-canvas" id="map-canvas" style="width:' + Math.round(mapZoom * 100) + '%;aspect-ratio:' + ratio + '">' +
+    '<img class="map-img" data-img="' + esc(map.image) + '" data-size="full" alt="" draggable="false">' +
+    (map.pins || []).map((pin) => pinHtml(pin, pin.id === selectedId)).join('') +
+  '</div></div>';
+}
+
+function mapZoomButtons() {
+  return '<span class="zoom-btns"><button type="button" class="btn small" data-map-zoom="-1" aria-label="Zoom out">−</button>' +
+    '<button type="button" class="btn small" data-map-zoom="1" aria-label="Zoom in">＋</button></span>';
+}
+
+function pinCardHtml(pin) {
+  const target = pinTarget(pin);
+  return '<strong>📍 ' + esc(pinTitle(pin)) + '</strong> ' + (pin.gm ? '<span class="badge badge-gm">🔒 GM only</span>' : '') +
+    (target ? '<div class="pin-target">' + (CATEGORY_ICONS[target.category] || '📄') + ' ' +
+      '<a href="#/p/' + encodeURIComponent(target.id) + '">' + esc(target.title) + '</a> ' + realityChip(target.realityId) + ' ' + statusChip(target) +
+      (target.content ? '<div class="muted small">' + esc(plainText(target.content).slice(0, 160)) + '</div>' : '') + '</div>'
+      : '<div class="muted small">This pin does not link to a page.</div>');
+}
+
+// The map as it shows on its page
+function mapSectionHtml(page) {
+  if (!page.map) {
+    if (page.category !== 'Maps') return '';
+    return '<section class="card map-empty"><strong>🗺️ This map has no picture yet.</strong> ' +
+      '<a class="btn small primary" href="#/map/' + encodeURIComponent(page.id) + '">Choose the map picture</a></section>';
+  }
+  const pins = (page.map.pins || []).slice().sort((a, b) => pinTitle(a).localeCompare(pinTitle(b)));
+  return '<section class="map-section" id="map">' +
+    '<div class="row map-tools">' + mapZoomButtons() +
+      '<a class="btn small" href="#/map/' + encodeURIComponent(page.id) + '">✎ Edit pins</a>' +
+      '<span class="muted small">Tap a pin.</span></div>' +
+    mapCanvasHtml(page.map, '', false) +
+    '<div id="pin-card" class="pin-card card" hidden></div>' +
+    (pins.length ? '<details class="pin-index"><summary>All places on this map (' + pins.length + ')</summary><ul class="pin-list">' +
+      pins.map((pin) => '<li><button type="button" class="btn link" data-show-pin="' + esc(pin.id) + '">📍 ' + esc(pinTitle(pin)) + '</button>' +
+        (pinTarget(pin) ? ' ' + realityChip(pinTarget(pin).realityId) : '') + '</li>').join('') + '</ul></details>' : '') +
+  '</section>';
+}
+
+// "On the map": the maps with a pin that links to this page
+function onMapsHtml(page) {
+  const found = [];
+  state.pages.forEach((m) => {
+    if (!m.map || m.id === page.id) return;
+    (m.map.pins || []).forEach((pin) => { if (pin.pageId === page.id) found.push({ map: m, pin: pin }); });
+  });
+  if (!found.length) return '';
+  return '<section class="on-maps"><h2>📍 On the map</h2><ul class="page-list">' + found.map((f) =>
+    '<li class="page-item"><a href="#/p/' + encodeURIComponent(f.map.id) + '?pin=' + encodeURIComponent(f.pin.id) + '">' +
+      '<span class="page-item-text"><span class="page-item-title">🗺️ ' + esc(f.map.title) + '</span>' +
+      '<span class="page-item-meta">Pin: ' + esc(pinTitle(f.pin)) + ' ' + realityChip(f.map.realityId) + '</span></span></a></li>').join('') +
+  '</ul></section>';
+}
+
+function applyMapZoom(step) {
+  mapZoom = Math.max(1, Math.min(5, step > 0 ? mapZoom * 1.5 : mapZoom / 1.5));
+  if (mapZoom < 1.05) mapZoom = 1;
+  const canvas = $('#map-canvas');
+  if (!canvas) return;
+  const wrap = canvas.parentElement;
+  const cx = (wrap.scrollLeft + wrap.clientWidth / 2) / canvas.offsetWidth;
+  const cy = (wrap.scrollTop + wrap.clientHeight / 2) / canvas.offsetHeight;
+  canvas.style.width = Math.round(mapZoom * 100) + '%';
+  wrap.scrollLeft = cx * canvas.offsetWidth - wrap.clientWidth / 2;
+  wrap.scrollTop = cy * canvas.offsetHeight - wrap.clientHeight / 2;
+}
+
+function showPin(page, pinId, scroll) {
+  const pin = (page.map && page.map.pins || []).find((p) => p.id === pinId);
+  const card = $('#pin-card');
+  if (!pin || !card) return;
+  card.innerHTML = pinCardHtml(pin);
+  card.hidden = false;
+  $$('.pin').forEach((el) => el.classList.toggle('selected', el.dataset.pin === pinId));
+  const el = $('.pin[data-pin="' + pinId + '"]');
+  if (el && scroll) {
+    const wrap = el.closest('.map-wrap');
+    wrap.scrollLeft = el.offsetLeft - wrap.clientWidth / 2;
+    wrap.scrollTop = el.offsetTop - wrap.clientHeight / 2;
+    $('#map').scrollIntoView({ block: 'start' });
+  }
+}
+
+function bindMapView(pageId, query) {
+  const page = pageById(pageId);
+  if (!page || !page.map) return;
+  on('[data-map-zoom]', 'click', (event) => applyMapZoom(Number(event.currentTarget.dataset.mapZoom)));
+  on('.map-canvas .pin', 'click', (event) => { event.preventDefault(); showPin(page, event.currentTarget.dataset.pin); });
+  on('[data-show-pin]', 'click', (event) => showPin(page, event.currentTarget.dataset.showPin, true));
+  if (query && query.pin) setTimeout(() => showPin(page, query.pin, true), 80);
+}
+
+/* Screen: every map in the chronicle -------------------------------- */
+function viewMaps() {
+  const maps = filteredPages().filter((p) => p.map || p.category === 'Maps').sort(byTitle);
+  return '<div class="narrow">' +
+    '<p class="crumbs"><a href="#/">Home</a> ›</p>' +
+    '<h1>🗺️ Maps</h1>' +
+    realityBar() +
+    (maps.length ? '<ul class="page-list">' + maps.map((p) => pageItem(p,
+      '<span class="muted small map-count">' + (p.map ? (p.map.pins || []).length + ' pins' : 'no picture yet') + '</span>')).join('') + '</ul>'
+      : '<div class="card empty">No maps yet. Make a new page in the category <strong>Maps</strong>, or open any page and tap <strong>🗺️ Add a map</strong>.</div>') +
+    '<a class="btn primary block" href="#/new?category=Maps">＋ New map</a>' +
+  '</div>';
+}
+
+/* Screen: edit the map and its pins --------------------------------- */
+function mapDraftKey(pageId) {
+  return 'kc_mapdraft_' + state.chronicleId + '_' + pageId;
+}
+
+const mapEdit = { pageId: '', map: null, selected: '', fromDraft: false };
+
+function startMapEdit(page) {
+  const draft = store.get(mapDraftKey(page.id), null);
+  mapEdit.pageId = page.id;
+  mapEdit.fromDraft = !!draft;
+  mapEdit.map = draft || (page.map ? JSON.parse(JSON.stringify(page.map)) : null);
+  mapEdit.selected = '';
+}
+
+function viewMapEditor(pageId) {
+  const page = pageById(pageId);
+  if (!page) return '<div class="narrow"><h1>Page not found</h1><a class="btn" href="#/">Back to home</a></div>';
+  if (mapEdit.pageId !== pageId || !mapEdit.map && page.map) startMapEdit(page);
+  const map = mapEdit.map;
+  return '<div class="narrow wide-graph">' +
+    '<p class="crumbs"><a href="#/p/' + encodeURIComponent(page.id) + '">' + esc(page.title) + '</a> ›</p>' +
+    '<h1>🗺️ ' + (page.map ? 'Edit the map' : 'Add a map') + '</h1>' +
+    (mapEdit.fromDraft ? '<div class="notice">Your unsaved changes were restored. <button type="button" class="btn small" id="discard-map-draft">Discard them</button></div>' : '') +
+    (!map
+      ? '<section class="card"><p>Choose the picture of the map: a scanned or drawn map, a screenshot, a photo of a hand-drawn map. ' +
+          'Big pictures are made smaller automatically (up to 2000 pixels).</p>' +
+          '<label class="btn primary block file-btn">📂 Choose the map picture<input type="file" id="map-file" accept="image/*" hidden></label>' +
+          '<p id="map-upload-status" class="muted small"></p></section>'
+      : '<p class="muted small">Tap the map to add a pin. Drag a pin to move it. Tap a pin to name it or link it to a page.</p>' +
+        '<div class="row map-tools">' + mapZoomButtons() +
+          '<label class="btn small file-btn">🖼 Change the picture<input type="file" id="map-file" accept="image/*" hidden></label>' +
+          '<span class="muted small" id="map-upload-status"></span></div>' +
+        mapCanvasHtml(map, mapEdit.selected, true) +
+        '<div id="pin-form-box"></div>' +
+        '<div class="row actions sticky-actions">' +
+          '<button class="btn primary" type="button" id="save-map">Save the map</button>' +
+          '<button class="btn" type="button" id="cancel-map">Cancel</button>' +
+          (page.map && page.canSeeSecrets ? '<button class="btn danger" type="button" id="remove-map">Remove the map</button>' : '') +
+        '</div>') +
+  '</div>';
+}
+
+function pinFormHtml(pin) {
+  const target = pinTarget(pin);
+  return '<form id="pin-form" class="form card pin-form keep-open">' +
+    '<h2>📍 Pin</h2>' +
+    '<label>Links to page <span class="hint">optional</span><input name="page" list="pin-pages" value="' + esc(target ? target.title : '') + '" placeholder="e.g. Vienna" autocomplete="off"></label>' +
+    pageOptionsList('pin-pages', mapEdit.pageId) +
+    '<label>Name on the map <span class="hint">optional · if empty, the page title is used</span><input name="label" maxlength="100" value="' + esc(pin.label || '') + '"></label>' +
+    '<div class="form-label">Colour</div><div class="swatches">' +
+      '<label class="swatch swatch-auto" title="Automatic: the colour of the page\'s reality"><input type="radio" name="color" value=""' + (!pin.color ? ' checked' : '') + '><span>auto</span></label>' +
+      REALITY_COLORS.concat(['#e0565b']).map((c) => '<label class="swatch" style="--rc:' + c + '"><input type="radio" name="color" value="' + c + '"' + (pin.color === c ? ' checked' : '') + '><span></span></label>').join('') +
+    '</div>' +
+    (isGM() || pin.gm ? '<label class="check"><input type="checkbox" name="gm"' + (pin.gm ? ' checked' : '') + (isGM() ? '' : ' disabled') + '> 🔒 GM only (players do not see this pin)</label>' : '') +
+    '<div class="row">' +
+      '<button type="submit" class="btn primary small">Done</button>' +
+      '<button type="button" class="btn danger small" id="delete-pin">Delete this pin</button>' +
+    '</div>' +
+  '</form>';
+}
+
+function bindMapEditor(pageId) {
+  const page = pageById(pageId);
+  if (!page) return;
+  const saveDraft = () => store.set(mapDraftKey(pageId), mapEdit.map);
+  const clearDraft = () => { store.remove(mapDraftKey(pageId)); mapEdit.fromDraft = false; };
+
+  on('#discard-map-draft', 'click', () => { clearDraft(); startMapEdit(page); render(); });
+  on('[data-map-zoom]', 'click', (event) => applyMapZoom(Number(event.currentTarget.dataset.mapZoom)));
+
+  on('#map-file', 'change', async (event) => {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = '';
+    if (!file) return;
+    if (state.offline) { toast('Pictures need internet to upload.', true); return; }
+    const status = $('#map-upload-status');
+    if (status) status.textContent = 'Uploading the picture…';
+    try {
+      const up = await uploadPictureFull(file);
+      mapEdit.map = Object.assign(mapEdit.map || { pins: [] }, { image: up.id, width: up.width, height: up.height });
+      saveDraft();
+      toast('Picture ready. Now add the pins, then tap Save the map.');
+      render();
+    } catch (e) {
+      if (e instanceof NetworkError) setOffline(true);
+      if (status) status.textContent = '';
+      toast(e.message, true);
+    }
+  });
+
+  const canvas = $('#map-canvas');
+  if (!canvas) return;
+  const pins = () => mapEdit.map.pins = mapEdit.map.pins || [];
+  const redrawPins = () => {
+    $$('.pin', canvas).forEach((el) => el.remove());
+    canvas.insertAdjacentHTML('beforeend', pins().map((pin) => pinHtml(pin, pin.id === mapEdit.selected)).join(''));
+  };
+  const showForm = () => {
+    const box = $('#pin-form-box');
+    const pin = pins().find((p) => p.id === mapEdit.selected);
+    box.innerHTML = pin ? pinFormHtml(pin) : '';
+    if (!pin) return;
+    const form = $('#pin-form');
+    const apply = () => {
+      const title = form.page.value.trim();
+      const target = title ? findPageByTitle(title) : null;
+      pin.pageId = target ? target.id : '';
+      pin.label = form.label.value.trim();
+      const color = $('input[name=color]:checked', form);
+      pin.color = color ? color.value : '';
+      if (form.gm && !form.gm.disabled) pin.gm = form.gm.checked;
+      saveDraft();
+      redrawPins();
+    };
+    form.addEventListener('change', apply);
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      apply();
+      const title = form.page.value.trim();
+      if (title && !findPageByTitle(title)) {
+        toast('There is no page called "' + title + '", so the pin is not linked. Check the spelling, or create the page first.', true);
+        return;
+      }
+      mapEdit.selected = '';
+      redrawPins();
+      showForm();
+    });
+    on('#delete-pin', 'click', () => {
+      mapEdit.map.pins = pins().filter((p) => p.id !== pin.id);
+      mapEdit.selected = '';
+      saveDraft();
+      redrawPins();
+      showForm();
+    });
+    form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  };
+  showForm();
+
+  const spot = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height))
+    };
+  };
+
+  // Drag a pin to move it, or tap it to change it
+  let drag = null;
+  canvas.addEventListener('pointerdown', (event) => {
+    const el = event.target.closest('.pin');
+    if (!el) return;
+    event.preventDefault();
+    drag = { id: el.dataset.pin, el: el, x: event.clientX, y: event.clientY, moved: false };
+    el.setPointerCapture(event.pointerId);
+  });
+  canvas.addEventListener('pointermove', (event) => {
+    if (!drag) return;
+    if (!drag.moved && Math.abs(event.clientX - drag.x) + Math.abs(event.clientY - drag.y) < 6) return;
+    drag.moved = true;
+    const p = spot(event);
+    drag.el.style.left = (p.x * 100) + '%';
+    drag.el.style.top = (p.y * 100) + '%';
+  });
+  const endDrag = (event) => {
+    if (!drag) return;
+    const pin = pins().find((p) => p.id === drag.id);
+    if (pin && drag.moved) {
+      const p = spot(event);
+      pin.x = Math.round(p.x * 10000) / 10000;
+      pin.y = Math.round(p.y * 10000) / 10000;
+      saveDraft();
+    }
+    if (pin && !drag.moved) {
+      mapEdit.selected = pin.id;
+      redrawPins();
+      showForm();
+    }
+    drag = null;
+    canvas.dataset.justDragged = '1';
+    setTimeout(() => { delete canvas.dataset.justDragged; }, 50);
+  };
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', () => { drag = null; });
+
+  // Tap on the map: add a pin there
+  canvas.addEventListener('click', (event) => {
+    if (event.target.closest('.pin') || canvas.dataset.justDragged) return;
+    const p = spot(event);
+    const pin = { id: 'pin_' + Math.random().toString(16).slice(2, 12), x: Math.round(p.x * 10000) / 10000, y: Math.round(p.y * 10000) / 10000, label: '', pageId: '', color: '', gm: false };
+    pins().push(pin);
+    mapEdit.selected = pin.id;
+    saveDraft();
+    redrawPins();
+    showForm();
+    setTimeout(() => { const input = $('#pin-form input[name=page]'); if (input) input.focus({ preventScroll: true }); }, 50);
+  });
+
+  on('#cancel-map', 'click', () => {
+    if (mapEdit.fromDraft || store.get(mapDraftKey(pageId), null)) {
+      if (!confirm('Throw away your changes to the map?')) return;
+    }
+    clearDraft();
+    mapEdit.pageId = '';
+    go('#/p/' + encodeURIComponent(pageId));
+  });
+
+  on('#save-map', 'click', async (event) => {
+    if (state.offline) { toast('You are offline. Your changes are kept on this phone; save again when you have internet.', true); return; }
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const saved = await api('saveMap', { pageId: pageId, map: {
+        image: mapEdit.map.image, width: mapEdit.map.width, height: mapEdit.map.height,
+        pins: pins().map((p) => ({ id: p.id, x: p.x, y: p.y, label: p.label, pageId: p.pageId, color: p.color, gm: !!p.gm }))
+      } });
+      rememberPage(saved);
+      clearDraft();
+      mapEdit.pageId = '';
+      toast('Map saved.');
+      go('#/p/' + encodeURIComponent(pageId));
+    } catch (e) {
+      if (e instanceof NetworkError) setOffline(true);
+      toast(e.message + ' Your changes are kept on this phone.', true);
+      button.disabled = false;
+    }
+  });
+
+  on('#remove-map', 'click', async () => {
+    if (state.offline) { toast('You are offline. Try again when you have internet.', true); return; }
+    if (!confirm('Remove the map and all its pins from this page? The page itself stays.')) return;
+    try {
+      const saved = await api('saveMap', { pageId: pageId, map: null });
+      rememberPage(saved);
+      clearDraft();
+      mapEdit.pageId = '';
+      toast('Map removed.');
+      go('#/p/' + encodeURIComponent(pageId));
+    } catch (e) { toast(e.message, true); }
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Session notes (version 5). One note per game session, with the day   */
+/* you played and the date in the story (rough or exact). Each note      */
+/* links to the characters, places and timeline events involved.       */
+/* ------------------------------------------------------------------ */
+function sessionHeading(s) {
+  const num = s.number ? 'Session ' + s.number : '';
+  if (num && s.title) return num + ': ' + s.title;
+  return s.title || num || 'Session notes';
+}
+
+function todayIso() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function formatPlayed(iso, long) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return '';
+  const d = new Date(+m[1], +m[2] - 1, +m[3]);
+  return d.toLocaleDateString('en-GB', long
+    ? { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }
+    : { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function sortedSessions(list) {
+  return list.slice().sort((a, b) =>
+    String(b.playedOn || '').localeCompare(String(a.playedOn || '')) ||
+    (Number(b.number) || 0) - (Number(a.number) || 0) ||
+    String(b.created).localeCompare(String(a.created)));
+}
+
+function linkedTitles(text) {
+  const out = [];
+  String(text || '').replace(/\[\[([^\]|]+?)(?:\|[^\]]+?)?\]\]/g, (m, t) => { out.push(t.trim()); return m; });
+  return out;
+}
+
+// Pages involved: the ones chosen in the list, plus the ones linked with [[…]] in the text
+function sessionPages(s) {
+  const ids = (s.pageIds || []).slice();
+  linkedTitles(s.text).forEach((t) => { const p = findPageByTitle(t); if (p && ids.indexOf(p.id) < 0) ids.push(p.id); });
+  return ids.map(pageById).filter(Boolean);
+}
+
+function sessionEvents(s) {
+  return sortedEvents((s.eventIds || []).map((id) => state.events.find((ev) => ev.id === id)).filter(Boolean));
+}
+
+function sessionsForPage(page) {
+  return sortedSessions(state.sessions.filter((s) => (s.pageIds || []).indexOf(page.id) >= 0 || linksTo(s.text, page.title)));
+}
+
+function sessionsForEvent(ev) {
+  return sortedSessions(state.sessions.filter((s) => (s.eventIds || []).indexOf(ev.id) >= 0));
+}
+
+function sessionDates(s) {
+  const when = parseStoryDate(s.storyDate);
+  return (s.playedOn ? '<span class="sdate">🎲 Played ' + esc(formatPlayed(s.playedOn)) + '</span>' : '') +
+    (s.storyDate ? '<span class="sdate">📅 In the story: ' + esc(when ? when.label : s.storyDate) + '</span>' : '');
+}
+
+function sessionCard(s) {
+  const people = sessionPages(s);
+  return '<a class="card session-card" href="#/session/' + encodeURIComponent(s.id) + '">' +
+    '<span class="session-title">' + esc(sessionHeading(s)) + ' ' + visibilityBadge(s) + '</span>' +
+    '<span class="session-dates">' + sessionDates(s) + ' ' + realityChip(s.realityId) + '</span>' +
+    (s.text ? '<span class="muted small">' + esc(plainText(s.text).slice(0, 180)) + (plainText(s.text).length > 180 ? '…' : '') + '</span>' : '') +
+    (people.length ? '<span class="session-people">' + people.slice(0, 8).map((p) => '<span class="tag">' + esc(p.title) + '</span>').join(' ') +
+      (people.length > 8 ? ' <span class="muted small">+' + (people.length - 8) + ' more</span>' : '') + '</span>' : '') +
+  '</a>';
+}
+
+function sessionsMiniList(list) {
+  return '<ul class="mini-timeline">' + list.map((s) =>
+    '<li><a href="#/session/' + encodeURIComponent(s.id) + '"><span class="mini-date">' +
+      esc(s.playedOn ? formatPlayed(s.playedOn) : 'No date') + '</span> ' + esc(sessionHeading(s)) + '</a> ' +
+      (s.storyDate ? '<span class="muted small">· ' + esc((parseStoryDate(s.storyDate) || {}).label || s.storyDate) + '</span> ' : '') +
+      realityChip(s.realityId) + ' ' + visibilityBadge(s) + '</li>').join('') + '</ul>';
+}
+
+function viewSessions() {
+  const list = sortedSessions(state.sessions.filter(inFilter));
+  const reality = state.realityFilter ? '?reality=' + encodeURIComponent(state.realityFilter) : '';
+  return '<div class="narrow">' +
+    '<p class="crumbs"><a href="#/timeline">Timeline</a> ›</p>' +
+    '<h1>📜 Session notes</h1>' +
+    realityBar() +
+    '<a class="btn primary block" href="#/session-edit/new' + reality + '">＋ Write notes for a session</a>' +
+    (list.length ? list.map(sessionCard).join('')
+      : '<div class="card empty">No session notes yet' + (state.realityFilter ? ' in this reality' : '') + '. After your next game, write down what happened, who was there and when it was in the story.</div>') +
+  '</div>';
+}
+
+function viewSession(id) {
+  const s = state.sessions.find((x) => x.id === id);
+  if (!s) {
+    return '<div class="narrow"><h1>Session notes not found</h1><p class="muted">They may have been deleted, or they are hidden from you. Try the refresh button at the top.</p>' +
+      '<a class="btn" href="#/sessions">All session notes</a></div>';
+  }
+  const people = sessionPages(s);
+  const events = sessionEvents(s);
+  let hiddenNotice = '';
+  if (s.visibility === 'gm') {
+    hiddenNotice = '<div class="notice notice-gm">🔒 <strong>Hidden from players.</strong>' +
+      (s.canReveal ? ' <button class="btn small primary" id="reveal-session">Reveal to players</button>' : '') + '</div>';
+  } else if (s.visibility === 'private') {
+    hiddenNotice = '<div class="notice notice-private">👁 <strong>Private.</strong> Only you can see these notes.' +
+      (s.canReveal ? ' <button class="btn small" id="reveal-session">Share with everyone</button>' : '') + '</div>';
+  }
+  const notesLabel = isGM() ? 'GM notes · players never see these' : 'Secret notes · only you and the GM see these';
+  const when = parseStoryDate(s.storyDate);
+  return '<article class="narrow page">' +
+    '<p class="crumbs"><a href="#/timeline">Timeline</a> › <a href="#/sessions">Session notes</a> ›</p>' +
+    '<h1 class="page-title">📜 ' + esc(sessionHeading(s)) + '</h1>' +
+    '<p class="page-meta">' + realityChip(s.realityId, true) + ' ' + visibilityBadge(s) + '</p>' +
+    '<div class="session-when card">' +
+      '<div><span class="muted small">🎲 Played</span><br><strong>' + esc(s.playedOn ? formatPlayed(s.playedOn, true) : '—') + '</strong></div>' +
+      '<div><span class="muted small">📅 In the story</span><br><strong>' + esc(when ? when.label : (s.storyDate || '—')) + '</strong>' +
+        (s.storyDate && when ? ' <a class="small" href="#/timeline?focus=' + encodeURIComponent(s.id) + '">on the timeline</a>' : '') + '</div>' +
+    '</div>' +
+    hiddenNotice +
+    '<div class="content">' + renderMarkdown(s.text, 'No notes written yet.') + '</div>' +
+    (people.length ? '<section><h2>🎭 Who and what was involved</h2><ul class="page-list">' + people.map((p) => pageItem(p)).join('') + '</ul></section>' : '') +
+    (events.length ? '<section><h2>⏳ Timeline events</h2><ul class="mini-timeline">' + events.map((x) =>
+      '<li><a href="#/timeline?focus=' + encodeURIComponent(x.ev.id) + '"><span class="mini-date">' + esc(x.when ? x.when.label : (x.ev.date || 'No date')) + '</span> ' +
+      esc(x.ev.title) + '</a> ' + realityChip(x.ev.realityId) + ' ' + visibilityBadge(x.ev) + '</li>').join('') + '</ul></section>' : '') +
+    (s.canSeeSecrets && s.gmNotes ? '<aside class="gm-notes"><h2>' + notesLabel + '</h2>' + renderMarkdown(s.gmNotes) + '</aside>' : '') +
+    '<p class="muted small">Written by ' + esc(userName(s.author)) + ' · last changed ' + esc(formatDate(s.updated)) +
+      (s.updatedBy ? ' by ' + esc(userName(s.updatedBy)) : '') + '</p>' +
+    '<div class="row actions">' +
+      '<a class="btn primary" href="#/session-edit/' + encodeURIComponent(s.id) + '">✎ Edit</a>' +
+      (s.canDelete ? '<button class="btn danger" id="delete-session">Delete</button>' : '') +
+    '</div>' +
+  '</article>';
+}
+
+async function revealSession(s) {
+  if (state.offline) { toast('You are offline. Try again when you have internet.', true); return; }
+  if (!confirm('Show these session notes to everyone?\n\nGM notes stay hidden.')) return;
+  try {
+    const saved = await api('saveSession', { session: { id: s.id, visibility: 'everyone', title: s.title, text: s.text, playedOn: s.playedOn,
+      storyDate: s.storyDate, number: s.number, realityId: s.realityId, pageIds: s.pageIds, eventIds: s.eventIds } });
+    rememberItem('sessions', saved);
+    toast('Revealed.');
+    render();
+  } catch (e) { toast(e.message, true); }
+}
+
+function bindSession(id) {
+  const s = state.sessions.find((x) => x.id === id);
+  if (!s) return;
+  on('#reveal-session', 'click', () => revealSession(s));
+  on('#delete-session', 'click', async () => {
+    if (state.offline) { toast('You are offline. Try again when you have internet.', true); return; }
+    if (!confirm('Delete "' + sessionHeading(s) + '" for good? This cannot be undone.\n\nThe pages and events it links to are not touched.')) return;
+    try {
+      await api('deleteSession', { id: s.id });
+      state.sessions = state.sessions.filter((x) => x.id !== s.id);
+      saveChronicleData();
+      toast('Session notes deleted.');
+      go('#/sessions');
+    } catch (e) { toast(e.message, true); }
+  });
+}
+
+/* Screen: write or change session notes ----------------------------- */
+function sessionDraftKey(id) {
+  return 'kc_sdraft_' + state.chronicleId + '_' + (id || 'new');
+}
+
+function eventChoiceLabel(ev) {
+  const when = parseStoryDate(ev.date);
+  return ev.title + ' — ' + (when ? when.label : (ev.date || 'no date'));
+}
+
+// The year of the story date of the most recent other session, to help with "early July"
+function lastStoryYear(exceptId) {
+  const list = sortedSessions(state.sessions.filter((s) => s.id !== exceptId && parseStoryDate(s.storyDate)));
+  return list.length ? parseStoryDate(list[0].storyDate).yearLabel : '';
+}
+
+function storyDateHelp(text, exceptId) {
+  const s = String(text || '').trim();
+  if (!s) return 'Optional. Rough is fine (<em>early July 2210</em>), and so is exact (<em>3 July 2210</em>). With a date, the notes also show on the timeline.';
+  const when = parseStoryDate(s);
+  if (when) return 'Understood as: <strong>' + esc(when.label) + '</strong>. It shows on the timeline there.';
+  const year = lastStoryYear(exceptId);
+  if (!/\d/.test(s)) {
+    return 'Add the year so it can go on the timeline, for example <em>' + esc(s) + ' 2210</em>. Without a year it is kept just as you wrote it.' +
+      (/^-?\d+$/.test(year) ? ' <button type="button" class="btn small" id="use-year" data-year="' + esc(year) + '">Add the year ' + esc(year) + '</button>' : '');
+  }
+  return '⚠ I could not understand this date. It is kept as you wrote it, but it is not on the timeline. Try <em>early July 2210</em> or <em>3 July 2210</em>.';
+}
+
+function viewSessionForm(id, query) {
+  const existing = id && id !== 'new' ? state.sessions.find((x) => x.id === id) : null;
+  if (id && id !== 'new' && !existing) return '<div class="narrow"><h1>Session notes not found</h1><a class="btn" href="#/sessions">All session notes</a></div>';
+  const nextNumber = state.sessions.reduce((max, s) => Math.max(max, Number(s.number) || 0), 0) + 1;
+  const base = existing ? Object.assign({}, existing) : {
+    number: nextNumber, title: '', playedOn: todayIso(), storyDate: '',
+    realityId: query.reality || state.realityFilter || '', visibility: 'everyone', text: '', gmNotes: '',
+    pageIds: query.page && pageById(query.page) ? [query.page] : [], eventIds: []
+  };
+  const draft = store.get(sessionDraftKey(id === 'new' ? '' : id), null);
+  const s = draft ? Object.assign({}, base, draft) : base;
+  const mayChangeVisibility = !existing || existing.canSeeSecrets;
+  const visOptions = ['everyone', 'gm', 'private'].filter((v) => v !== 'gm' || isGM() || s.visibility === 'gm');
+  const showNotes = !existing || existing.canSeeSecrets;
+  const notesLabel = isGM() ? 'GM notes (players never see these)' : 'Secret notes (only you and the GM see these)';
+  return '<div class="narrow">' +
+    '<p class="crumbs"><a href="#/sessions">Session notes</a> ›</p>' +
+    '<h1>' + (existing ? 'Edit session notes' : 'New session notes') + '</h1>' +
+    (draft ? '<div class="notice">Your unsaved changes were restored. <button type="button" class="btn small" id="discard-sdraft">Discard them</button></div>' : '') +
+    (state.offline ? '<div class="notice notice-gm">You are offline. You can type, and your text is kept on this phone, but saving needs internet.</div>' : '') +
+    '<form id="session-form" class="form keep-open">' +
+      '<div class="two-col narrow-first">' +
+        '<label>Session number<input name="number" type="number" min="0" step="1" value="' + esc(s.number || '') + '"></label>' +
+        '<label>Title <span class="hint">optional</span><input name="title" maxlength="200" value="' + esc(s.title) + '" placeholder="e.g. The Fall of Vienna"></label>' +
+      '</div>' +
+      '<div class="two-col">' +
+        '<label>🎲 The day you played<input name="playedOn" type="date" value="' + esc(s.playedOn) + '"></label>' +
+        '<label>📅 When it was in the story<input name="storyDate" maxlength="100" value="' + esc(s.storyDate) + '" placeholder="e.g. early July 2210 or 3 July 2210" autocomplete="off">' +
+          '<span class="hint" id="story-help">' + storyDateHelp(s.storyDate, existing && existing.id) + '</span></label>' +
+      '</div>' +
+      '<div class="two-col">' +
+        '<label>Reality<select name="realityId">' + realityOptions(s.realityId) + '</select></label>' +
+        '<label>Who can see it?<select name="visibility"' + (mayChangeVisibility ? '' : ' disabled') + '>' +
+          visOptions.map((v) => '<option value="' + v + '"' + (v === s.visibility ? ' selected' : '') + '>' + VISIBILITY_LABELS[v] + '</option>').join('') +
+        '</select></label>' +
+      '</div>' +
+      '<label>What happened <span class="hint">link people and places with [[Page name]]</span>' +
+        '<textarea name="text" rows="12" placeholder="Who was there, what they did, what they found out…">' + esc(s.text) + '</textarea></label>' +
+
+      '<fieldset class="multiverse link-picker">' +
+        '<legend>🎭 Characters, places and things involved</legend>' +
+        '<div id="sp-pages" class="chip-list"></div>' +
+        '<div class="picker-row"><input id="sp-page-input" list="sp-page-options" placeholder="Type a page name" autocomplete="off">' +
+          '<button type="button" class="btn small" id="sp-page-add">Add</button></div>' +
+        pageOptionsList('sp-page-options', '') +
+        '<button type="button" class="btn small" id="sp-from-text">＋ Add everyone linked in the text</button>' +
+      '</fieldset>' +
+
+      '<fieldset class="multiverse link-picker">' +
+        '<legend>⏳ Timeline events involved</legend>' +
+        '<div id="sp-events" class="chip-list"></div>' +
+        '<div class="picker-row"><input id="sp-event-input" list="sp-event-options" placeholder="Type an event" autocomplete="off">' +
+          '<button type="button" class="btn small" id="sp-event-add">Add</button></div>' +
+        '<datalist id="sp-event-options">' + sortedEvents(state.events).map((x) => '<option value="' + esc(eventChoiceLabel(x.ev)) + '">').join('') + '</datalist>' +
+        '<p class="hint">To add a new event, save these notes first, then use <em>＋ Add an event</em> on the timeline.</p>' +
+      '</fieldset>' +
+
+      (showNotes ? '<label class="gm-notes-label">' + notesLabel +
+        '<textarea name="gmNotes" rows="5" placeholder="Secrets, what the players did not notice…">' + esc(s.gmNotes || '') + '</textarea></label>' : '') +
+      '<div class="row actions sticky-actions">' +
+        '<button class="btn primary" type="submit">Save</button>' +
+        '<button class="btn" type="button" id="cancel-session">Cancel</button>' +
+      '</div>' +
+    '</form>' +
+  '</div>';
+}
+
+function bindSessionForm(id, query) {
+  const form = $('#session-form');
+  if (!form) return;
+  const key = sessionDraftKey(id === 'new' ? '' : id);
+  const existing = id && id !== 'new' ? state.sessions.find((x) => x.id === id) : null;
+  const draft = store.get(key, null);
+  const startPages = query.page && pageById(query.page) ? [query.page] : [];
+  const picked = {
+    pageIds: ((draft && draft.pageIds) || (existing ? existing.pageIds : startPages) || []).slice(),
+    eventIds: ((draft && draft.eventIds) || (existing ? existing.eventIds : []) || []).slice()
+  };
+
+  const saveDraft = () => {
+    store.set(key, {
+      number: form.number.value, title: form.title.value, playedOn: form.playedOn.value, storyDate: form.storyDate.value,
+      realityId: form.realityId.value, visibility: form.visibility.value, text: form.text.value,
+      gmNotes: form.gmNotes ? form.gmNotes.value : undefined, pageIds: picked.pageIds, eventIds: picked.eventIds
+    });
+  };
+  const drawChips = () => {
+    $('#sp-pages').innerHTML = picked.pageIds.map((pid) => {
+      const p = pageById(pid);
+      return p ? '<span class="chip">' + (CATEGORY_ICONS[p.category] || '📄') + ' ' + esc(p.title) +
+        '<button type="button" data-unpick-page="' + esc(pid) + '" aria-label="Remove">✕</button></span>' : '';
+    }).join('') || '<span class="muted small">Nobody chosen yet.</span>';
+    $('#sp-events').innerHTML = picked.eventIds.map((eid) => {
+      const ev = state.events.find((x) => x.id === eid);
+      return ev ? '<span class="chip">⏳ ' + esc(eventChoiceLabel(ev)) +
+        '<button type="button" data-unpick-event="' + esc(eid) + '" aria-label="Remove">✕</button></span>' : '';
+    }).join('') || '<span class="muted small">No events chosen yet.</span>';
+  };
+  drawChips();
+
+  const addPage = () => {
+    const input = $('#sp-page-input');
+    const title = input.value.trim();
+    if (!title) return;
+    const p = findPageByTitle(title);
+    if (!p) { toast('There is no page called "' + title + '". Check the spelling, or link it in the text with [[' + title + ']].', true); return; }
+    if (picked.pageIds.indexOf(p.id) < 0) picked.pageIds.push(p.id);
+    input.value = '';
+    saveDraft();
+    drawChips();
+  };
+  const addEvent = () => {
+    const input = $('#sp-event-input');
+    const text = input.value.trim().toLowerCase();
+    if (!text) return;
+    const ev = state.events.find((x) => eventChoiceLabel(x).toLowerCase() === text) || state.events.find((x) => x.title.toLowerCase() === text);
+    if (!ev) { toast('There is no timeline event called "' + input.value.trim() + '". Pick one from the list.', true); return; }
+    if (picked.eventIds.indexOf(ev.id) < 0) picked.eventIds.push(ev.id);
+    input.value = '';
+    saveDraft();
+    drawChips();
+  };
+  on('#sp-page-add', 'click', addPage);
+  on('#sp-event-add', 'click', addEvent);
+  $('#sp-page-input').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); addPage(); } });
+  $('#sp-event-input').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); addEvent(); } });
+  on('#sp-from-text', 'click', () => {
+    let added = 0;
+    linkedTitles(form.text.value).forEach((t) => {
+      const p = findPageByTitle(t);
+      if (p && picked.pageIds.indexOf(p.id) < 0) { picked.pageIds.push(p.id); added++; }
+    });
+    toast(added ? added + (added === 1 ? ' page' : ' pages') + ' added.' : 'No new [[links]] to existing pages found in the text.');
+    saveDraft();
+    drawChips();
+  });
+  form.addEventListener('click', (event) => {
+    const up = event.target.closest('[data-unpick-page]');
+    const ue = event.target.closest('[data-unpick-event]');
+    if (up) picked.pageIds = picked.pageIds.filter((x) => x !== up.dataset.unpickPage);
+    else if (ue) picked.eventIds = picked.eventIds.filter((x) => x !== ue.dataset.unpickEvent);
+    else return;
+    event.preventDefault();
+    saveDraft();
+    drawChips();
+  });
+
+  const help = () => { $('#story-help').innerHTML = storyDateHelp(form.storyDate.value, existing && existing.id); };
+  form.storyDate.addEventListener('input', help);
+  $('#story-help').addEventListener('click', (event) => {
+    const b = event.target.closest('#use-year');
+    if (!b) return;
+    event.preventDefault();
+    form.storyDate.value = form.storyDate.value.trim() + ' ' + b.dataset.year;
+    help();
+    saveDraft();
+  });
+  form.addEventListener('input', saveDraft);
+  form.addEventListener('change', saveDraft);
+  on('#discard-sdraft', 'click', () => { store.remove(key); render(); });
+  on('#cancel-session', 'click', () => {
+    if (store.get(key, null) && !confirm('Throw away your changes?')) return;
+    store.remove(key);
+    go(existing ? '#/session/' + encodeURIComponent(existing.id) : '#/sessions');
+  });
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (state.offline) { toast('You are offline. Your text is kept on this phone; save again when you have internet.', true); return; }
+    if (!form.title.value.trim() && !form.text.value.trim() && !form.number.value) { toast('Please write at least a title, a number or a few lines.', true); return; }
+    const pending = $('#sp-page-input').value.trim();
+    if (pending) addPage();
+    const button = $('button[type=submit]', form);
+    button.disabled = true;
+    button.textContent = 'Saving…';
+    const input = {
+      id: existing ? existing.id : '',
+      chronicleId: state.chronicleId,
+      number: form.number.value,
+      title: form.title.value,
+      playedOn: form.playedOn.value,
+      storyDate: form.storyDate.value,
+      realityId: form.realityId.value,
+      visibility: form.visibility.value,
+      text: form.text.value,
+      pageIds: picked.pageIds,
+      eventIds: picked.eventIds
+    };
+    if (form.gmNotes) input.gmNotes = form.gmNotes.value;
+    try {
+      const saved = await api('saveSession', { session: input });
+      rememberItem('sessions', saved);
+      store.remove(key);
+      toast('Saved.');
+      go('#/session/' + encodeURIComponent(saved.id));
+    } catch (e) {
+      if (e instanceof NetworkError) setOffline(true);
+      toast(e.message + ' Your text is kept on this phone.', true);
+      button.disabled = false;
+      button.textContent = 'Save';
+    }
+  });
+}
+
+function searchSessions(query) {
+  const words = String(query || '').toLowerCase().split(/\s+/).filter((w) => w && !w.startsWith('#'));
+  if (!words.length) return [];
+  return sortedSessions(state.sessions.filter(inFilter).filter((s) => {
+    const text = (sessionHeading(s) + ' ' + (s.storyDate || '') + ' ' + plainText(s.text) + ' ' + (s.canSeeSecrets ? plainText(s.gmNotes) : '')).toLowerCase();
+    return words.every((w) => text.indexOf(w) >= 0);
+  }));
+}
+
+/* ------------------------------------------------------------------ */
 /* Screen: search                                                      */
 /* ------------------------------------------------------------------ */
 function searchPages(query, category) {
@@ -3158,12 +4672,14 @@ function searchResultsHtml(q, category) {
   }
   const results = searchPages(q, category);
   const events = category ? [] : searchEvents(q);
-  if (!results.length && !events.length) {
+  const sessions = category ? [] : searchSessions(q);
+  if (!results.length && !events.length && !sessions.length) {
     return '<div class="card empty">Nothing found.' + (q.trim() && !q.trim().startsWith('#')
       ? ' <a href="#/new?title=' + encodeURIComponent(q.trim()) + '">Create a page called “' + esc(q.trim()) + '”</a>' : '') + '</div>';
   }
   return '<p class="muted small">' + results.length + ' page' + (results.length === 1 ? '' : 's') +
-      (events.length ? ' · ' + events.length + ' timeline event' + (events.length === 1 ? '' : 's') : '') + '</p>' +
+      (events.length ? ' · ' + events.length + ' timeline event' + (events.length === 1 ? '' : 's') : '') +
+      (sessions.length ? ' · ' + sessions.length + ' session note' + (sessions.length === 1 ? '' : 's') : '') + '</p>' +
     (results.length ? '<ul class="page-list">' + results.slice(0, 100).map((p) =>
       '<li class="page-item"><a href="#/p/' + encodeURIComponent(p.id) + '">' +
         (p.images && p.images.length ? picture(p.images[0], 'thumb', 'pic-thumb') : '') +
@@ -3175,7 +4691,8 @@ function searchResultsHtml(q, category) {
       '</a></li>').join('') + '</ul>' : '') +
     (events.length ? '<h2>⏳ On the timeline</h2><ul class="mini-timeline">' + events.slice(0, 50).map((x) =>
       '<li><a href="#/timeline?focus=' + encodeURIComponent(x.ev.id) + '"><span class="mini-date">' + esc(x.when ? x.when.label : (x.ev.date || 'No date')) + '</span> ' +
-      esc(x.ev.title) + '</a> ' + realityChip(x.ev.realityId) + '</li>').join('') + '</ul>' : '');
+      esc(x.ev.title) + '</a> ' + realityChip(x.ev.realityId) + '</li>').join('') + '</ul>' : '') +
+    (sessions.length ? '<h2>📜 Session notes</h2>' + sessionsMiniList(sessions.slice(0, 50)) : '');
 }
 
 function bindSearch() {
@@ -3236,6 +4753,8 @@ function viewSettings() {
         ' timeline events are saved on this device for offline reading, along with every picture you have opened.</p>' +
     '</section>' +
 
+    backupCard() +
+
     '<section class="card">' +
       '<h2>Who sees what</h2>' +
       '<ul class="help-list">' +
@@ -3246,9 +4765,30 @@ function viewSettings() {
         '<li>The same rules apply to <strong>timeline events</strong> and <strong>realities</strong>. A hidden reality shows to players as "Unknown reality".</li>' +
         '<li><strong>Pictures</strong> follow their page: only people who can see the page see its pictures.</li>' +
         '<li><strong>Character sheets</strong> follow their page too. The GM can also make a sheet <em>GM only</em>: players then see the page, but not the numbers.</li>' +
+        '<li><strong>Relationships</strong> have their own setting, and a player only sees one when they can also see both pages.</li>' +
+        '<li><strong>Map pins</strong> that link to a hidden page stay hidden, and the GM can make any pin <em>GM only</em>.</li>' +
+        '<li><strong>Session notes</strong> follow the same rules as pages, including GM notes.</li>' +
       '</ul>' +
     '</section>' +
   '</div>';
+}
+
+function backupCard() {
+  const b = state.backup;
+  let text;
+  if (b && b.on) {
+    text = '✅ Weekly backups are on. A copy of the Google Sheet is saved every Monday night in your Google Drive folder <em>Keeper of Chronicles - Backups</em>.';
+  } else {
+    text = '⚠ Weekly backups are not switched on yet. ' + (isGM() || (currentChronicle() || {}).role === 'gm'
+      ? 'In the Google Sheet, choose <strong>Keeper → 4. Switch on weekly backups</strong>.'
+      : 'Ask whoever owns the Google Sheet to switch them on.');
+  }
+  return '<section class="card">' +
+    '<h2>Backups</h2>' +
+    '<p>' + text + '</p>' +
+    (b && b.last ? '<p class="muted small">Last backup: ' + esc(new Date(b.last).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })) + '.</p>' : '') +
+    '<p class="muted small">Google also keeps a version history of the Sheet (File → Version history), for undoing a recent mistake.</p>' +
+  '</section>';
 }
 
 function bindSettings() {
@@ -3283,7 +4823,7 @@ function resetImport() {
   Object.assign(importState, { chronicleId: state.chronicleId, fileName: '', data: null, preview: null, result: null, error: '', working: false });
 }
 
-const IMPORT_KIND_LABELS = { reality: '🌌 Reality', page: '📄 Page', event: '⏳ Event' };
+const IMPORT_KIND_LABELS = { reality: '🌌 Reality', page: '📄 Page', event: '⏳ Event', relation: '🔗 Relationship', session: '📜 Session' };
 const IMPORT_STATUS_LABELS = { new: 'New', exists: 'Already there, skipped', error: 'Problem, skipped' };
 
 function importItemList(items, status) {
@@ -3304,15 +4844,16 @@ function viewImport() {
   const d = importState.data;
   let html = '<div class="narrow">' +
     '<h1>📥 Import from a file</h1>' +
-    '<p class="muted">Loads many realities, pages and timeline events at once into <strong>' + esc(c.name) + '</strong>. ' +
+    '<p class="muted">Loads many realities, pages, timeline events, relationships and session notes at once into <strong>' + esc(c.name) + '</strong>. ' +
       'Nothing already in the chronicle is changed: anything with the same name is skipped.</p>';
 
   if (importState.result) {
     const r = importState.result;
     html += '<section class="card import-done">' +
       '<h2>✅ Import finished</h2>' +
-      '<p>Added <strong>' + r.added.realities + '</strong> realities, <strong>' + r.added.pages + '</strong> pages and <strong>' +
-        r.added.events + '</strong> timeline events.' +
+      '<p>Added <strong>' + r.added.realities + '</strong> realities, <strong>' + r.added.pages + '</strong> pages, <strong>' +
+        r.added.events + '</strong> timeline events, <strong>' + (r.added.relations || 0) + '</strong> relationships and <strong>' +
+        (r.added.sessions || 0) + '</strong> session notes.' +
         (r.existsCount ? ' ' + r.existsCount + ' were already there and were skipped.' : '') +
         (r.errorCount ? ' ' + r.errorCount + ' had a problem and were skipped (see below).' : '') + '</p>' +
       '<div class="row"><a class="btn primary" href="#/">Go to the chronicle</a><a class="btn" href="#/timeline">Open the timeline</a>' +
