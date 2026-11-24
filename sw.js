@@ -2,7 +2,7 @@
 // Keeps a copy of the app on the phone so it opens even without internet.
 // When you change any app file, raise the number in CACHE_NAME (for example keeper-v2.1).
 
-const CACHE_NAME = 'keeper-v3.0';
+const CACHE_NAME = 'keeper-v4.0';
 const APP_FILES = [
   './',
   'index.html',

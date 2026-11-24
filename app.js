@@ -1,10 +1,10 @@
 /* KEEPER OF CHRONICLES - THE APP
- * Version 3.0 (build step 3: World of Darkness character sheets)
+ * Version 4.0 (build step 4: importing many pages at once)
  * You do not need to change anything in this file. Your settings live in config.js.
  */
 'use strict';
 
-const APP_VERSION = '3.0';
+const APP_VERSION = '4.0';
 const API_URL = (window.KEEPER_API_URL || '').trim();
 
 const CATEGORIES = [
@@ -458,7 +458,81 @@ function monthNumber(word) {
   return i < 0 ? -1 : i + 1;
 }
 
+// Understands dates such as "1997", "March 1997", "12 March 1997", "early June 2210",
+// "mid-September 2210", "end of February 2211", "Christmas 2210" and spans such as
+// "2160 – 2170" or "December 2210 – late January 2211" (sorted by where they start).
+const DATE_QUALIFIERS = [
+  [/^(?:the\s+)?(?:beginning|start)\s+of\s+/, 3, 'beginning of '],
+  [/^early[\s-]+/, 5, 'early '],
+  [/^(?:mid|middle\s+of)[\s-]+/, 15, 'mid-'],
+  [/^late[\s-]+/, 26, 'late '],
+  [/^(?:the\s+)?end\s+of\s+/, 29, 'end of ']
+];
+const DATE_HOLIDAYS = [
+  [/^christmas\s+eve$/, 12, 24, 'Christmas Eve'],
+  [/^christmas(?:\s+day)?$/, 12, 25, 'Christmas'],
+  [/^new\s+year'?s?\s+eve$/, 12, 31, "New Year's Eve"],
+  [/^new\s+year'?s?(?:\s+day)?$/, 1, 1, "New Year's Day"],
+  [/^halloween$/, 10, 31, 'Halloween'],
+  [/^midsummer$/, 6, 24, 'Midsummer']
+];
+
 function parseStoryDate(text) {
+  const s = String(text || '').trim();
+  if (!s) return null;
+  // A span: "A – B", "A - B" (with spaces), "A to B", or two plain years "2160-2170"
+  let parts = s.split(/\s*[–—]\s*|\s+-\s+|\s+(?:to|until)\s+/i);
+  if (parts.length !== 2) {
+    const years = s.match(/^(\d{3,6})\s*-\s*(\d{3,6})$/);
+    if (years && +years[2] > +years[1]) parts = [years[1], years[2]];
+  }
+  if (parts.length === 2 && parts[0] && parts[1]) {
+    const b = parseOneDate(parts[1]);
+    // "April – June 2211": the first part borrows the year of the second
+    const a = parseOneDate(parts[0]) || (b && /[a-z]/i.test(parts[0]) ? parseOneDate(parts[0] + ' ' + b.year) : null);
+    if (a && b) {
+      return { sort: a.sort, year: a.year, yearLabel: a.yearLabel, label: a.label + ' – ' + b.label.replace(/^around /, ''), approx: a.approx };
+    }
+  }
+  return parseOneDate(s);
+}
+
+function parseOneDate(text) {
+  let s = String(text || '').trim().toLowerCase().replace(/,/g, ' ').replace(/\s+/g, ' ');
+  if (!s) return null;
+  // "2210 early June" is the same as "early June 2210"
+  const yearFirst = s.match(/^(-?\d{3,6})\s+([a-z][a-z\s'.-]*)$/);
+  if (yearFirst && !/^(b\.?\s?c|a\.?\s?d|c\.?e)/.test(yearFirst[2])) s = yearFirst[2] + ' ' + yearFirst[1];
+  let approxWord = '';
+  s = s.replace(/^(c\.|ca\.|circa|about|around|~)\s*/, () => { approxWord = 'around '; return ''; });
+  for (const [pattern, month, day, name] of DATE_HOLIDAYS) {
+    const mm = s.match(/^(.*?)\s+(-?\d{1,6})$/);
+    if (mm && pattern.test(mm[1])) {
+      const y = +mm[2];
+      return { sort: y * 10000 + month * 100 + day, year: y, yearLabel: String(y), label: approxWord + name + ' ' + y, approx: !!approxWord };
+    }
+  }
+  for (const [pattern, day, word] of DATE_QUALIFIERS) {
+    if (pattern.test(s)) {
+      const base = parseSimpleDate(s.replace(pattern, ''));
+      if (!base) return null;
+      if (base.decade || base.day) return null;
+      if (base.month) {
+        return { sort: base.year * 10000 + base.month * 100 + day, year: base.year, yearLabel: base.yearLabel,
+          label: approxWord + word + base.label, approx: true };
+      }
+      // "early 2210" / "late 2210"
+      const month = day < 10 ? 1 : day < 20 ? 6 : 11;
+      return { sort: base.year * 10000 + month * 100 + day, year: base.year, yearLabel: base.yearLabel,
+        label: approxWord + word + base.label, approx: true };
+    }
+  }
+  const out = parseSimpleDate(s);
+  if (out && approxWord) { out.label = 'around ' + out.label; out.approx = true; }
+  return out;
+}
+
+function parseSimpleDate(text) {
   let s = String(text || '').trim().toLowerCase();
   if (!s) return null;
   let approx = false;
@@ -483,7 +557,11 @@ function parseStoryDate(text) {
   let label;
   if (decade) label = y < 0 ? (-y) + 's BC' : y + 's';
   else label = (d ? d + ' ' : '') + (m ? MONTH_NAMES[m - 1] + ' ' : '') + yearLabel;
-  return { sort: y * 10000 + m * 100 + d, year: y, yearLabel: decade ? label : yearLabel, label: (approx ? 'around ' : '') + label, approx: approx };
+  // A plain year ("2212") sorts after the months of that year, so a span such as
+  // "2211 – 2221" comes after "late August 2211".
+  const sort = y * 10000 + (m || d || decade ? m * 100 + d : 1300);
+  return { sort: sort, year: y, month: m, day: d, decade: decade, yearLabel: decade ? label : yearLabel,
+    label: (approx ? 'around ' : '') + label, approx: approx };
 }
 
 function sortedEvents(list) {
@@ -816,6 +894,7 @@ function render() {
     case 'reality':   content = viewRealityForm(route.id); bind = () => bindRealityForm(route.id); break;
     case 'sheet':     content = viewSheetEditor(route.id, route.query); bind = () => bindSheetEditor(route.id, route.query); break;
     case 'settings':  content = viewSettings(); bind = () => bindSettings(); break;
+    case 'import':    content = viewImport(); bind = () => bindImport(); break;
     default:          content = viewHome(); bind = () => bindHome();
   }
   app.innerHTML = shell(content, true);
@@ -1666,7 +1745,7 @@ function bindTimeline(query) {
 
 function dateHelp(text, when) {
   if (!String(text || '').trim()) return 'Leave empty if you do not know. Events without a date go to the end.';
-  if (!when) return '⚠ I could not understand this date, so it goes to the end. Try 1997, March 1997 or 12 March 1997.';
+  if (!when) return '⚠ I could not understand this date, so it goes to the end. Try 1997, March 1997, 12 March 1997, early June 1997, Christmas 1997 or 1990 – 1995.';
   return 'Understood as: <strong>' + esc(when.label) + '</strong>';
 }
 
@@ -3129,6 +3208,7 @@ function viewSettings() {
         '<a class="btn primary" href="#/chronicles">Switch chronicle</a>' +
         '<a class="btn" href="#/chronicle/' + encodeURIComponent(c.id) + '">Edit this chronicle</a>' +
         '<a class="btn" href="#/realities">🌌 Realities (' + state.realities.length + ')</a>' +
+        (c.role === 'gm' ? '<a class="btn" href="#/import">📥 Import from a file</a>' : '') +
       '</div>' +
     '</section>' +
 
@@ -3190,6 +3270,155 @@ function bindSettings() {
       toast('Password changed.');
       f.reset();
     } catch (e) { toast(e.message, true); }
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Screen: import (GM only). Loads a prepared .json file with many      */
+/* realities, pages and timeline events. Shows a preview first.        */
+/* ------------------------------------------------------------------ */
+const importState = { chronicleId: '', fileName: '', data: null, preview: null, result: null, error: '', working: false };
+
+function resetImport() {
+  Object.assign(importState, { chronicleId: state.chronicleId, fileName: '', data: null, preview: null, result: null, error: '', working: false });
+}
+
+const IMPORT_KIND_LABELS = { reality: '🌌 Reality', page: '📄 Page', event: '⏳ Event' };
+const IMPORT_STATUS_LABELS = { new: 'New', exists: 'Already there, skipped', error: 'Problem, skipped' };
+
+function importItemList(items, status) {
+  const list = items.filter((it) => it.status === status);
+  if (!list.length) return '';
+  return '<ul class="import-list import-' + status + '">' + list.map((it) =>
+    '<li><span class="import-kind">' + IMPORT_KIND_LABELS[it.kind] + '</span> <strong>' + esc(it.title) + '</strong>' +
+      (it.note ? ' <span class="muted small">· ' + esc(it.note) + '</span>' : '') + '</li>').join('') + '</ul>';
+}
+
+function viewImport() {
+  const c = currentChronicle();
+  if (importState.chronicleId !== state.chronicleId) resetImport();
+  if (c.role !== 'gm') {
+    return '<div class="narrow"><h1>📥 Import</h1><div class="card">Only the GM of this chronicle can import. ' +
+      'GM: ' + esc(userName(c.gm)) + '.</div></div>';
+  }
+  const d = importState.data;
+  let html = '<div class="narrow">' +
+    '<h1>📥 Import from a file</h1>' +
+    '<p class="muted">Loads many realities, pages and timeline events at once into <strong>' + esc(c.name) + '</strong>. ' +
+      'Nothing already in the chronicle is changed: anything with the same name is skipped.</p>';
+
+  if (importState.result) {
+    const r = importState.result;
+    html += '<section class="card import-done">' +
+      '<h2>✅ Import finished</h2>' +
+      '<p>Added <strong>' + r.added.realities + '</strong> realities, <strong>' + r.added.pages + '</strong> pages and <strong>' +
+        r.added.events + '</strong> timeline events.' +
+        (r.existsCount ? ' ' + r.existsCount + ' were already there and were skipped.' : '') +
+        (r.errorCount ? ' ' + r.errorCount + ' had a problem and were skipped (see below).' : '') + '</p>' +
+      '<div class="row"><a class="btn primary" href="#/">Go to the chronicle</a><a class="btn" href="#/timeline">Open the timeline</a>' +
+        '<button class="btn" id="import-again">Import another file</button></div>' +
+      (r.errorCount ? '<h3>Problems</h3>' + importItemList(r.items, 'error') : '') +
+    '</section></div>';
+    return html;
+  }
+
+  html += '<section class="card">' +
+    '<h2>1. Choose the file</h2>' +
+    '<p class="small muted">An import file ends in <code>.json</code>. Claude prepares it for you from your notes or PDFs.</p>' +
+    '<label class="btn block file-btn">📂 Choose an import file' +
+      '<input type="file" id="import-file" accept=".json,application/json,text/plain" hidden></label>' +
+    (importState.fileName ? '<p>Chosen: <strong>' + esc(importState.fileName) + '</strong></p>' : '') +
+    (importState.error ? '<p class="error-text">⚠ ' + esc(importState.error) + '</p>' : '') +
+  '</section>';
+
+  if (d) {
+    const wrongChronicle = d.chronicle && d.chronicle.trim().toLowerCase() !== c.name.trim().toLowerCase();
+    html += '<section class="card">' +
+      '<h2>2. Check what will be added</h2>' +
+      (d.title ? '<p><strong>' + esc(d.title) + '</strong></p>' : '') +
+      (wrongChronicle ? '<p class="error-text">⚠ This file was made for the chronicle <strong>' + esc(d.chronicle) +
+        '</strong>, but you have <strong>' + esc(c.name) + '</strong> open. Switch chronicle first if that is not what you want.</p>' : '');
+    if (importState.working && !importState.preview) {
+      html += '<p>Checking the file with the server…</p>';
+    } else if (importState.preview) {
+      const p = importState.preview;
+      html += '<p><span class="import-badge new">' + p.newCount + ' new</span> ' +
+        (p.existsCount ? '<span class="import-badge exists">' + p.existsCount + ' already there</span> ' : '') +
+        (p.errorCount ? '<span class="import-badge error">' + p.errorCount + ' with a problem</span>' : '') + '</p>' +
+        (p.errorCount ? '<h3>Problems (these will be skipped)</h3>' + importItemList(p.items, 'error') : '') +
+        '<details' + (p.newCount <= 80 ? ' open' : '') + '><summary>New (' + p.newCount + ')</summary>' + importItemList(p.items, 'new') + '</details>' +
+        (p.existsCount ? '<details><summary>Already there, will be skipped (' + p.existsCount + ')</summary>' + importItemList(p.items, 'exists') + '</details>' : '');
+    }
+    html += '</section>';
+
+    if (importState.preview) {
+      html += '<section class="card">' +
+        '<h2>3. Import</h2>' +
+        (importState.preview.newCount
+          ? '<button class="btn primary block" id="import-go"' + (importState.working ? ' disabled' : '') + '>' +
+              (importState.working ? 'Importing… please keep the app open' : '📥 Import ' + importState.preview.newCount + ' new items') + '</button>' +
+            '<p class="small muted">This can take up to a minute for a big file.</p>'
+          : '<p>Everything in this file is already in the chronicle. There is nothing new to import.</p>') +
+      '</section>';
+    }
+  }
+  html += '</div>';
+  return html;
+}
+
+async function runImportPreview() {
+  importState.working = true;
+  importState.preview = null;
+  render();
+  try {
+    importState.preview = await api('importBatch', { chronicleId: state.chronicleId, data: importState.data, dryRun: true });
+  } catch (e) {
+    importState.error = e instanceof NetworkError ? 'You are offline. Importing needs internet.' : e.message;
+    importState.data = null;
+  }
+  importState.working = false;
+  render();
+}
+
+function bindImport() {
+  on('#import-again', 'click', () => { resetImport(); render(); });
+  on('#import-file', 'change', async (event) => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    resetImport();
+    importState.fileName = file.name;
+    let data = null;
+    try {
+      data = JSON.parse(await file.text());
+    } catch (e) {
+      importState.error = 'This file could not be read. Is it the .json file Claude made for you?';
+    }
+    if (data && data.format !== 'keeper-import') {
+      importState.error = 'This is not a Keeper import file.';
+      data = null;
+    }
+    importState.data = data;
+    if (data) await runImportPreview(); else render();
+  });
+  on('#import-go', 'click', async () => {
+    const c = currentChronicle();
+    const d = importState.data;
+    if (!d || !importState.preview || importState.working) return;
+    if (d.chronicle && d.chronicle.trim().toLowerCase() !== c.name.trim().toLowerCase() &&
+        !confirm('This file was made for "' + d.chronicle + '", but "' + c.name + '" is open. Import into "' + c.name + '" anyway?')) return;
+    if (state.offline) { toast('You are offline. Importing needs internet.', true); return; }
+    importState.working = true;
+    render();
+    try {
+      importState.result = await api('importBatch', { chronicleId: state.chronicleId, data: d, dryRun: false });
+      importState.working = false;
+      await loadPages();
+      toast('Import finished.');
+    } catch (e) {
+      importState.working = false;
+      toast(e instanceof NetworkError ? 'The connection was lost. Open Import again and choose the same file: anything already saved is skipped.' : e.message, true);
+    }
+    render();
   });
 }
 
