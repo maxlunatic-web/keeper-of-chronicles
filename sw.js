@@ -1,8 +1,8 @@
 // KEEPER OF CHRONICLES - SERVICE WORKER
 // Keeps a copy of the app on the phone so it opens even without internet.
-// When you change any app file, raise the number in CACHE_NAME (for example keeper-v1.1).
+// When you change any app file, raise the number in CACHE_NAME (for example keeper-v2.1).
 
-const CACHE_NAME = 'keeper-v1.0';
+const CACHE_NAME = 'keeper-v2.0';
 const APP_FILES = [
   './',
   'index.html',
@@ -20,10 +20,13 @@ self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
 
+// Remove old copies of the app. The saved pictures ("keeper-images") are kept.
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
-      .then((names) => Promise.all(names.filter((n) => n !== CACHE_NAME).map((n) => caches.delete(n))))
+      .then((names) => Promise.all(names
+        .filter((n) => n.indexOf('keeper-v') === 0 && n !== CACHE_NAME)
+        .map((n) => caches.delete(n))))
       .then(() => self.clients.claim())
   );
 });
@@ -32,7 +35,9 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   if (request.method !== 'GET') return;
-  if (new URL(request.url).origin !== self.location.origin) return; // never touch the Google API calls
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return; // never touch the Google API calls
+  if (url.pathname.indexOf('/__keeper-image/') === 0) return; // pictures are handled by the app itself
 
   event.respondWith((async () => {
     const cache = await caches.open(CACHE_NAME);
