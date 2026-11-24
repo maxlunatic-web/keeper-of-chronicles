@@ -1,6 +1,6 @@
 /* KEEPER OF CHRONICLES - LOOK AND FEEL
  * The GM view uses blood red, the player view uses moonlight blue.
- * Version 2.0
+ * Version 3.0
  */
 
 :root {
@@ -338,3 +338,104 @@ body.viewer-open { overflow: hidden; }
 .mini-timeline a { text-decoration: none; color: var(--text); }
 .mini-date { color: var(--muted); font-size: 0.85rem; margin-right: 6px; }
 .page-timeline, .gallery-section { margin-top: 24px; }
+
+/* ------------------------------------------------------------------ */
+/* Version 3: character sheets                                         */
+/* ------------------------------------------------------------------ */
+.sheet-chip { display: inline-block; font-family: var(--sans); font-size: 0.74rem; padding: 1px 8px; border-radius: 6px; background: var(--accent-soft); border: 1px solid var(--border); color: var(--text); vertical-align: middle; white-space: nowrap; }
+.sheet { margin: 24px 0; padding: 4px 0 8px; border-top: 2px solid var(--accent); }
+.sheet-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sheet-top h2 { margin: 0.8em 0 0.3em; }
+.sheet-actions { margin: 4px 0 12px; }
+.sheet-empty { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+.wide-sheet { max-width: 900px; }
+
+.sheet-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.sheet-sec { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 14px 12px; min-width: 0; }
+.sheet-sec.wide { grid-column: 1 / -1; }
+.sheet-h { font-family: var(--serif); font-size: 1.05rem; color: var(--accent); margin: 4px 0 8px; text-transform: uppercase; letter-spacing: 0.08em; }
+.sheet-sec h4 { font-family: var(--serif); font-weight: normal; font-size: 0.95rem; color: var(--muted); margin: 6px 0 4px; border-bottom: 1px solid var(--border); padding-bottom: 2px; }
+
+.sheet-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px 14px; }
+.sheet-field { display: flex !important; flex-direction: column; gap: 2px !important; margin: 4px 0 !important; font-size: 0.78rem !important; color: var(--muted); }
+.sheet-field.wide { grid-column: 1 / -1; }
+.sheet-field strong { font-weight: normal; font-family: var(--serif); font-size: 1.02rem; color: var(--text); }
+.sheet-sec input, .sheet-sec select { padding: 6px 8px; font-size: 0.92rem; border-radius: 8px; }
+
+.trait-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 0 20px; }
+.trait { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px; padding: 1px 4px; border-radius: 6px; }
+.trait.zero .trait-name { color: var(--muted); }
+.trait-name { font-size: 0.95rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.trait-note { font-size: 0.8rem; color: var(--muted); margin: -4px 4px 4px; }
+.trait.custom { flex-wrap: wrap; padding: 4px 0; border-bottom: 1px dashed var(--border); }
+.trait.custom input { flex: 1 1 120px; min-width: 0; }
+.trait.custom.with-note input:last-child { flex-basis: 100%; }
+.trait.custom.merit select { width: auto; flex: none; }
+.trait.custom.merit input[data-num] { width: 64px; flex: none; }
+.trait.pickable { cursor: pointer; outline: 1px dashed var(--border); }
+.trait.picked { background: var(--accent-soft); outline: 1px solid var(--accent); }
+.row-del { flex: none; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; }
+.add-row { margin-top: 6px; }
+
+.dots { display: inline-flex; gap: 3px; flex: none; }
+.dot { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--muted); background: transparent; padding: 0; display: inline-block; }
+.dot.on { background: var(--text); border-color: var(--text); }
+.dot.sixth { margin-left: 5px; }
+button.dot { cursor: pointer; width: 22px; height: 22px; }
+.boxes { display: inline-flex; flex-wrap: wrap; gap: 3px; }
+.box { width: 18px; height: 18px; border: 1.5px solid var(--muted); border-radius: 3px; background: transparent; padding: 0; display: inline-block; }
+.box.on { background: var(--accent); border-color: var(--accent); }
+button.box { cursor: pointer; width: 24px; height: 24px; }
+.sheet-type-pool .trait, .sheet-type-counter .boxes { margin: 4px 0; }
+.sheet-type-pool .trait { flex-wrap: wrap; }
+.sheet-type-pool .trait-name { flex: none; }
+.counter-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.counter-num { font-family: var(--serif); font-size: 1.1rem; }
+.counter-btns { display: inline-flex; gap: 6px; }
+.counter-btns .btn { min-width: 40px; }
+.tracker { margin: 6px 0 10px; }
+.tracker-edit .tiny { display: flex !important; flex-direction: row !important; align-items: center; gap: 4px !important; margin: 0 !important; font-size: 0.75rem !important; }
+.tracker-edit .tiny input { width: 60px; }
+.tracker-edit .boxes { flex-basis: 100%; }
+
+.health { display: flex; flex-direction: column; gap: 2px; }
+.health-row { display: grid; grid-template-columns: 1fr 34px 36px; align-items: center; gap: 6px; }
+.hbox { width: 30px; height: 30px; border: 1.5px solid var(--muted); border-radius: 4px; background: transparent; color: var(--text); font-weight: bold; font-size: 1rem; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+button.hbox { cursor: pointer; }
+.hbox.mb { border-color: #d9a441; color: #d9a441; }
+.hbox.ml { border-color: var(--danger); color: var(--danger); }
+.hbox.ma { border-color: #ff6b6b; background: rgba(224, 86, 91, 0.3); color: #fff; }
+.sheet-text p { margin: 0.3em 0; }
+.sheet-sec textarea { min-height: 90px; }
+
+.template-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin: 8px 0 16px; }
+.template-card { display: flex; gap: 10px; align-items: center; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); text-decoration: none; }
+.template-icon { font-size: 1.8rem; }
+.copy-other { margin: 12px 0; }
+.copy-other summary { cursor: pointer; color: var(--link); }
+
+/* Dice roller */
+.roller { background: var(--surface-2); border: 1px solid var(--accent); border-radius: var(--radius); padding: 8px 14px 12px; margin: 0 0 12px; }
+.roll-controls { display: flex; flex-wrap: wrap; gap: 16px; margin: 6px 0; }
+.stepper { display: inline-flex; align-items: center; gap: 8px; }
+.stepper span { color: var(--muted); font-size: 0.85rem; }
+.stepper strong { font-size: 1.3rem; min-width: 26px; text-align: center; }
+.stepper .btn { min-width: 40px; }
+.roll-options { display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; }
+.roll-options label { display: flex; align-items: center; gap: 8px; }
+.roll-options input { width: auto; }
+.roll-result { margin-top: 10px; padding: 8px 10px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border); }
+.roll-result.success { border-color: #7cbf6a; }
+.roll-result.botch { border-color: var(--danger); background: rgba(224, 86, 91, 0.15); }
+.dice { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.die { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); font-weight: bold; }
+.die.hit { background: #2f4a2a; border-color: #7cbf6a; color: #e6ffe0; }
+.die.one { background: #4a1820; border-color: var(--danger); color: #ffd6d9; }
+
+/* Special blocks (bloodline powers, sacred weapon, personal powers…) */
+.sheet-type-block { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.sheet-type-block.editing { grid-column: 1 / -1; }
+.block-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
+.block-head input { flex: 1 1 200px; font-family: var(--serif); font-size: 1.05rem; }
+.sheet-type-block-add { border-style: dashed; }
+@media (max-width: 480px) { .trait.custom > input:first-child { flex-basis: 100%; } }

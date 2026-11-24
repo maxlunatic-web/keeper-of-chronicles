@@ -1,10 +1,10 @@
 /* KEEPER OF CHRONICLES - THE APP
- * Version 2.0 (build step 2: pictures, timeline, realities and versions)
+ * Version 3.0 (build step 3: World of Darkness character sheets)
  * You do not need to change anything in this file. Your settings live in config.js.
  */
 'use strict';
 
-const APP_VERSION = '2.0';
+const APP_VERSION = '3.0';
 const API_URL = (window.KEEPER_API_URL || '').trim();
 
 const CATEGORIES = [
@@ -220,6 +220,7 @@ async function loadPages() {
     state.pagesLoadedAt = Date.now();
     saveChronicleData();
     if (state.realityFilter && !realityById(state.realityFilter)) setRealityFilter('');
+    applyPendingSheets();
   } catch (e) {
     if (e instanceof NetworkError) {
       setOffline(true);
@@ -813,6 +814,7 @@ function render() {
     case 'realities': content = viewRealities(); break;
     case 'r':         content = viewReality(route.id); bind = () => bindReality(route.id); break;
     case 'reality':   content = viewRealityForm(route.id); bind = () => bindRealityForm(route.id); break;
+    case 'sheet':     content = viewSheetEditor(route.id, route.query); bind = () => bindSheetEditor(route.id, route.query); break;
     case 'settings':  content = viewSettings(); bind = () => bindSettings(); break;
     default:          content = viewHome(); bind = () => bindHome();
   }
@@ -848,7 +850,7 @@ function shell(content, withNav) {
     '<div id="offline-banner" class="offline-banner"' + (state.offline ? '' : ' hidden') + '>Offline: showing the copy saved on this phone. Editing is paused.</div>' +
     '<main class="view">' + content + '</main>' +
     (withNav && c ? '<nav class="bottombar">' +
-      tab(['home', 'c', 'p', 'realities', 'r', 'reality'], '#/', '⌂', 'Home') +
+      tab(['home', 'c', 'p', 'realities', 'r', 'reality', 'sheet'], '#/', '⌂', 'Home') +
       tab(['search'], '#/search', '⌕', 'Search') +
       tab(['timeline', 'event'], '#/timeline', '⏳', 'Timeline') +
       tab(['new', 'edit'], '#/new', '＋', 'New page') +
@@ -1052,7 +1054,7 @@ function pageItem(page, extra) {
     '<a href="#/p/' + encodeURIComponent(page.id) + '">' + thumb +
       '<span class="page-item-text">' +
         '<span class="page-item-title">' + esc(page.title) + ' ' + visibilityBadge(page) + '</span>' +
-        '<span class="page-item-meta">' + esc(page.category) + reality + (page.status ? ' ' + statusChip(page) : '') +
+        '<span class="page-item-meta">' + esc(page.category) + reality + (page.status ? ' ' + statusChip(page) : '') + (page.sheet ? ' ' + sheetSummary(page) : '') +
           ' · ' + esc(formatDate(page.updated)) + (tags ? ' ' + tags : '') + '</span>' +
       '</span>' +
     '</a>' + (extra || '') +
@@ -1171,6 +1173,7 @@ function versionCard(p) {
     '<span class="version-text">' +
       '<span class="version-title">' + esc(p.title) + ' ' + visibilityBadge(p) + '</span>' +
       '<span>' + (p.realityId ? realityChip(p.realityId) : '<span class="muted small">No reality chosen</span>') + ' ' + statusChip(p) + '</span>' +
+      (p.sheet ? '<span>' + sheetSummary(p) + '</span>' : '') +
     '</span>' +
   '</a>';
 }
@@ -1247,9 +1250,11 @@ function viewPage(id) {
     cover +
     '<h1 class="page-title">' + esc(page.title) + '</h1>' +
     '<p class="page-meta">' + realityChip(page.realityId, true) + ' ' + statusChip(page) + ' ' + visibilityBadge(page) + ' ' + tags + '</p>' +
+    (page.sheet && String(page.content || '').length > 600 ? '<p><button type="button" class="btn small" id="jump-sheet">📜 Jump to the character sheet</button></p>' : '') +
     hiddenNotice +
     versionsHtml(page) +
     '<div class="content">' + renderMarkdown(page.content) + '</div>' +
+    sheetSectionForPage(page) +
     gallery +
     gmNotes +
     '<section class="page-timeline"><h2>⏳ On the timeline</h2>' +
@@ -1272,6 +1277,8 @@ function viewPage(id) {
 
 function bindPage(id) {
   on('#reveal-btn', 'click', () => revealPage(id));
+  on('#jump-sheet', 'click', () => { const el = document.getElementById('sheet'); if (el) el.scrollIntoView({ behavior: 'smooth' }); });
+  bindSheetView(id);
   on('#delete-btn', 'click', async () => {
     const page = state.pages.find((p) => p.id === id);
     if (!page) return;
@@ -1879,6 +1886,1118 @@ function bindRealityForm(id) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Character sheets (Classic World of Darkness, Revised / 20th)         */
+/* A sheet belongs to one page. Each version of a person in another     */
+/* reality is its own page, so every version has its own sheet.         */
+/* ------------------------------------------------------------------ */
+const SHEET_ATTRIBUTES = {
+  type: 'traits', key: 'attr', title: 'Attributes', min: 1, scaled: true, wide: true,
+  groups: [
+    { title: 'Physical', traits: ['Strength', 'Dexterity', 'Stamina'] },
+    { title: 'Social', traits: ['Charisma', 'Manipulation', 'Appearance'] },
+    { title: 'Mental', traits: ['Perception', 'Intelligence', 'Wits'] }
+  ]
+};
+
+function sheetAbilities(talents, skills, knowledges) {
+  return {
+    type: 'traits', key: 'abil', title: 'Abilities', min: 0, scaled: true, wide: true, extra: true,
+    groups: [
+      { title: 'Talents', traits: talents },
+      { title: 'Skills', traits: skills },
+      { title: 'Knowledges', traits: knowledges }
+    ]
+  };
+}
+
+const HEALTH_LEVELS = [['Bruised', 0], ['Hurt', -1], ['Injured', -1], ['Wounded', -2], ['Mauled', -2], ['Crippled', -5], ['Incapacitated', null]];
+
+const SHEET_HEALTH = { type: 'health', key: 'health', title: 'Health' };
+const SHEET_WILLPOWER = { type: 'pool', key: 'willpower', title: 'Willpower', max: 10, min: 1 };
+
+const V20_TALENTS = ['Alertness', 'Athletics', 'Awareness', 'Brawl', 'Empathy', 'Expression', 'Intimidation', 'Leadership', 'Streetwise', 'Subterfuge'];
+const V20_SKILLS = ['Animal Ken', 'Crafts', 'Drive', 'Etiquette', 'Firearms', 'Larceny', 'Melee', 'Performance', 'Stealth', 'Survival'];
+const V20_KNOWLEDGES = ['Academics', 'Computer', 'Finance', 'Investigation', 'Law', 'Medicine', 'Occult', 'Politics', 'Science', 'Technology'];
+
+const CLASSIC_IDENTITY = [
+  { k: 'player', label: 'Player' },
+  { k: 'concept', label: 'Concept' },
+  { k: 'nature', label: 'Nature' },
+  { k: 'demeanor', label: 'Demeanor' }
+];
+
+const SUGGEST = {
+  clans: ['Assamite (Banu Haqim)', 'Brujah', 'Followers of Set (Ministry)', 'Gangrel', 'Giovanni', 'Lasombra', 'Malkavian', 'Nosferatu', 'Ravnos',
+    'Toreador', 'Tremere', 'Tzimisce', 'Ventrue', 'Caitiff', 'Thin-Blood', 'Baali', 'Cappadocian', 'Daughters of Cacophony', 'Gargoyle', 'Harbingers of Skulls',
+    'Kiasyd', 'Lamia', 'Nagaraja', 'Salubri', 'Samedi', 'True Brujah', 'Blood Brothers'],
+  sects: ['Camarilla', 'Sabbat', 'Anarch Movement', 'Independent', 'Inconnu', "Tal'Mahe'Ra"],
+  disciplines: ['Animalism', 'Auspex', 'Celerity', 'Chimerstry', 'Daimoinon', 'Dementation', 'Dominate', 'Fortitude', 'Melpominee', 'Mytherceria',
+    'Necromancy', 'Obeah', 'Obfuscate', 'Obtenebration', 'Potence', 'Presence', 'Protean', 'Quietus', 'Sanguinus', 'Serpentis', 'Spiritus', 'Temporis',
+    'Thanatosis', 'Thaumaturgy', 'Valeren', 'Vicissitude', 'Visceratika', 'Koldunic Sorcery'],
+  vampireBackgrounds: ['Allies', 'Alternate Identity', 'Black Hand Membership', 'Contacts', 'Domain', 'Fame', 'Generation', 'Herd', 'Influence', 'Mentor',
+    'Resources', 'Retainers', 'Rituals', 'Status'],
+  breeds: ['Homid', 'Metis', 'Lupus'],
+  auspices: ['Ragabash', 'Theurge', 'Philodox', 'Galliard', 'Ahroun'],
+  tribes: ['Black Furies', 'Bone Gnawers', 'Children of Gaia', 'Fianna', 'Get of Fenris', 'Glass Walkers', 'Red Talons', 'Shadow Lords', 'Silent Striders',
+    'Silver Fangs', 'Stargazers', 'Uktena', 'Wendigo', 'Black Spiral Dancers', 'Bunyip', 'Croatan', 'White Howlers'],
+  werewolfBackgrounds: ['Allies', 'Ancestors', 'Contacts', 'Fate', 'Fetish', 'Kinfolk', 'Mentor', 'Pure Breed', 'Resources', 'Rites', 'Spirit Heritage', 'Totem'],
+  traditions: ['Akashic Brotherhood', 'Celestial Chorus', 'Cult of Ecstasy', 'Dreamspeakers', 'Euthanatos', 'Order of Hermes', 'Society of Ether', 'Verbena',
+    'Virtual Adepts', 'Hollow Ones', 'Orphan', 'Iteration X', 'New World Order', 'Progenitors', 'Syndicate', 'Void Engineers', 'Nephandi', 'Marauder'],
+  essences: ['Dynamic', 'Pattern', 'Primordial', 'Questing'],
+  mageBackgrounds: ['Allies', 'Arcane', 'Avatar', 'Backup', 'Chantry', 'Contacts', 'Destiny', 'Dream', 'Familiar', 'Influence', 'Library', 'Mentor', 'Node',
+    'Requisitions', 'Resources', 'Retainers', 'Sanctum', 'Secret Weapons', 'Status', 'Wonder'],
+  kiths: ['Boggan', 'Clurichaun', 'Eshu', 'Nocker', 'Piskie', 'Pooka', 'Redcap', 'Satyr', 'Selkie', 'Sidhe (Arcadian)', 'Sidhe (Autumn)', 'Sluagh', 'Troll'],
+  seemings: ['Childling', 'Wilder', 'Grump'],
+  courts: ['Seelie', 'Unseelie'],
+  arts: ['Autumn', 'Chicanery', 'Chronos', 'Contract', "Dragon's Ire", 'Legerdemain', 'Metamorphosis', 'Naming', 'Oneiromancy', 'Primal', 'Pyretics',
+    'Soothsay', 'Sovereign', 'Wayfare'],
+  changelingBackgrounds: ['Chimera', 'Contacts', 'Dreamers', 'Holdings', 'Mentor', 'Remembrance', 'Resources', 'Retinue', 'Title', 'Treasure'],
+  guilds: ['Alchemists', 'Artificers', 'Chanteurs', 'Harbingers', 'Haunters', 'Masquers', 'Mnemoi', 'Monitors', 'Oracles', 'Pardoners', 'Proctors',
+    'Puppeteers', 'Sandmen', 'Solicitors', 'Spooks', 'Usurers'],
+  arcanoi: ['Argos', 'Castigate', 'Contaminate', 'Embody', 'Fatalism', 'Flux', 'Inhabit', 'Intimation', 'Keening', 'Lifeweb', 'Mnemosynis', 'Moliate',
+    'Outrage', 'Pandemonium', 'Phantasm', 'Puppetry', 'Usury'],
+  wraithBackgrounds: ['Allies', 'Artifact', 'Eidolon', 'Haunt', 'Legacy', 'Memoriam', 'Mentor', 'Notoriety', 'Relic', 'Status'],
+  creeds: ['Avenger', 'Defender', 'Hermit', 'Innocent', 'Judge', 'Martyr', 'Redeemer', 'Visionary', 'Wayward'],
+  edges: ['Absolve', 'Becalm', 'Bluster', 'Brand', 'Burn', 'Cleave', 'Confront', 'Demand', 'Discern', 'Donate', 'Foresee', 'Hide', 'Illuminate', 'Pinpoint',
+    'Radiate', 'Rejuvenate', 'Respire', 'Witness', 'Ward'],
+  hunterBackgrounds: ['Allies', 'Arsenal', 'Bystanders', 'Contacts', 'Destiny', 'Influence', 'Mentor', 'Patron', 'Resources', 'Unity'],
+  houses: ['Devils (Namaru)', 'Scourges (Asharu)', 'Malefactors (Annunaki)', 'Fiends (Neberu)', 'Defilers (Lammasu)', 'Devourers (Rabisu)', 'Slayers (Halaku)'],
+  factions: ['Faustians', 'Cryptics', 'Luciferans', 'Ravenors', 'Reconcilers'],
+  lores: ['Lore of the Celestials', 'Lore of Flame', 'Lore of Radiance', 'Lore of the Firmament', 'Lore of Paths', 'Lore of Portals', 'Lore of Light',
+    'Lore of Patterns', 'Lore of Transfiguration', 'Lore of Humanity', 'Lore of the Fundament', 'Lore of the Wild', 'Lore of the Forge', 'Lore of the Earth',
+    'Lore of the Spirit', 'Lore of the Realms', 'Lore of Awakening', 'Lore of the Flesh', 'Lore of Longing', 'Lore of Storms', 'Lore of the Winds',
+    'Lore of Death', 'Lore of the Beast'],
+  demonBackgrounds: ['Allies', 'Contacts', 'Eminence', 'Fame', 'Followers', 'Influence', 'Legacy', 'Mentor', 'Pacts', 'Paragon', 'Resources'],
+  mortalBackgrounds: ['Allies', 'Contacts', 'Fame', 'Influence', 'Mentor', 'Resources', 'Retainers', 'Status'],
+  numina: ['Hedge Magic', 'Psychic Phenomena', 'True Faith', 'Animal Psychics', 'Clairvoyance', 'Cursing', 'Precognition', 'Telepathy', 'Telekinesis']
+};
+
+function sheetList(key, title, suggest, max, hint, withNote) {
+  return { type: 'list', key: key, title: title, suggest: suggest || [], max: max || 5, hint: hint || '', note: !!withNote };
+}
+
+function sheetTraits(key, title, traits, min, max) {
+  return { type: 'traits', key: key, title: title, min: min, max: max, groups: [{ title: '', traits: traits }] };
+}
+
+// Humanity, a Path, or another moral code: one rating from 0 to 10.
+function sheetMorality(title, fields) {
+  return { type: 'traits', key: 'morality', title: title, min: 0, max: 10, fields: fields || [], groups: [{ title: '', traits: [{ n: 'Rating', k: 'rating' }] }] };
+}
+
+// Every sheet ends with these parts, so anything special (also from other universes) has a place.
+const SHEET_TAIL = [
+  { type: 'blocks', key: 'blocks', title: 'Special blocks' },
+  { type: 'merits', key: 'merits', title: 'Merits & Flaws' },
+  sheetList('other', 'Other traits', [], 10, 'Anything that has dots but no place above. Crossover powers too.'),
+  { type: 'trackers', key: 'trackers', title: 'Other trackers', hint: 'Anything you count down and up again: regenerations, charges, ammo, Paradox flaws…' },
+  { type: 'fields', key: 'xpf', title: 'Experience', fields: [{ k: 'xpTotal', label: 'Total earned', num: true }, { k: 'xpSpent', label: 'Spent', num: true }] },
+  { type: 'text', key: 'equipment', title: 'Equipment & possessions', rows: 4 },
+  { type: 'text', key: 'notes', title: 'Notes', rows: 5 }
+];
+
+const SHEET_TEMPLATES = [
+  {
+    id: 'vampire', name: 'Vampire', full: 'Vampire: The Masquerade', icon: '🩸',
+    sections: [
+      { type: 'fields', key: 'id', title: 'Who', wide: true, fields: CLASSIC_IDENTITY.concat([
+        { k: 'clan', label: 'Clan', list: 'clans' }, { k: 'generation', label: 'Generation', num: true },
+        { k: 'sire', label: 'Sire' }, { k: 'sect', label: 'Sect', list: 'sects' }, { k: 'haven', label: 'Haven' }]) },
+      SHEET_ATTRIBUTES,
+      sheetAbilities(V20_TALENTS, V20_SKILLS, V20_KNOWLEDGES),
+      sheetList('disciplines', 'Disciplines', SUGGEST.disciplines, 'scaled'),
+      sheetList('backgrounds', 'Backgrounds', SUGGEST.vampireBackgrounds, 5),
+      sheetTraits('virtue', 'Virtues', ['Conscience / Conviction', 'Self-Control / Instinct', 'Courage'], 1, 5),
+      sheetMorality('Humanity / Path', [{ k: 'pathName', label: 'Path (empty = Humanity)' }, { k: 'bearing', label: 'Bearing' }]),
+      SHEET_WILLPOWER,
+      { type: 'counter', key: 'blood', title: 'Blood pool', defaultMax: 10, limit: 50, perTurn: true },
+      SHEET_HEALTH,
+      { type: 'text', key: 'rituals', title: 'Paths, rituals & weaknesses', rows: 4 }
+    ]
+  },
+  {
+    id: 'werewolf', name: 'Werewolf', full: 'Werewolf: The Apocalypse', icon: '🐺',
+    sections: [
+      { type: 'fields', key: 'id', title: 'Who', wide: true, fields: CLASSIC_IDENTITY.concat([
+        { k: 'breed', label: 'Breed', list: 'breeds' }, { k: 'auspice', label: 'Auspice', list: 'auspices' },
+        { k: 'tribe', label: 'Tribe', list: 'tribes' }, { k: 'camp', label: 'Camp' }, { k: 'pack', label: 'Pack' },
+        { k: 'totem', label: 'Pack totem' }, { k: 'rank', label: 'Rank' }]) },
+      SHEET_ATTRIBUTES,
+      sheetAbilities(['Alertness', 'Athletics', 'Brawl', 'Empathy', 'Expression', 'Intimidation', 'Leadership', 'Primal-Urge', 'Streetwise', 'Subterfuge'],
+        V20_SKILLS, ['Academics', 'Computer', 'Enigmas', 'Investigation', 'Law', 'Medicine', 'Occult', 'Politics', 'Rituals', 'Science']),
+      sheetList('backgrounds', 'Backgrounds', SUGGEST.werewolfBackgrounds, 5),
+      sheetList('gifts', 'Gifts', [], 5, 'Dots = the Gift\'s level.', true),
+      { type: 'pool', key: 'glory', title: 'Glory', max: 10, min: 0 },
+      { type: 'pool', key: 'honor', title: 'Honor', max: 10, min: 0 },
+      { type: 'pool', key: 'wisdom', title: 'Wisdom', max: 10, min: 0 },
+      { type: 'pool', key: 'rage', title: 'Rage', max: 10, min: 0 },
+      { type: 'pool', key: 'gnosis', title: 'Gnosis', max: 10, min: 0 },
+      SHEET_WILLPOWER,
+      SHEET_HEALTH,
+      { type: 'text', key: 'rites', title: 'Rites & fetishes', rows: 4 }
+    ]
+  },
+  {
+    id: 'mage', name: 'Mage', full: 'Mage: The Ascension', icon: '✴️',
+    sections: [
+      { type: 'fields', key: 'id', title: 'Who', wide: true, fields: CLASSIC_IDENTITY.concat([
+        { k: 'essence', label: 'Essence', list: 'essences' }, { k: 'tradition', label: 'Tradition / Convention', list: 'traditions' },
+        { k: 'cabal', label: 'Cabal' }, { k: 'paradigm', label: 'Paradigm' }, { k: 'practice', label: 'Practice' },
+        { k: 'instruments', label: 'Instruments', wide: true }]) },
+      SHEET_ATTRIBUTES,
+      sheetAbilities(['Alertness', 'Art', 'Athletics', 'Awareness', 'Brawl', 'Empathy', 'Expression', 'Intimidation', 'Leadership', 'Streetwise', 'Subterfuge'],
+        ['Crafts', 'Drive', 'Etiquette', 'Firearms', 'Martial Arts', 'Meditation', 'Melee', 'Research', 'Stealth', 'Survival', 'Technology'],
+        ['Academics', 'Computer', 'Cosmology', 'Enigmas', 'Esoterica', 'Investigation', 'Law', 'Medicine', 'Occult', 'Politics', 'Science']),
+      sheetTraits('sphere', 'Spheres', ['Correspondence', 'Entropy', 'Forces', 'Life', 'Matter', 'Mind', 'Prime', 'Spirit', 'Time'], 0, 5),
+      sheetList('backgrounds', 'Backgrounds', SUGGEST.mageBackgrounds, 5),
+      sheetTraits('arete', 'Arete', ['Arete'], 0, 10),
+      SHEET_WILLPOWER,
+      { type: 'counter', key: 'quintessence', title: 'Quintessence', defaultMax: 20, limit: 20 },
+      { type: 'counter', key: 'paradox', title: 'Paradox', defaultMax: 20, limit: 20 },
+      SHEET_HEALTH,
+      { type: 'text', key: 'rotes', title: 'Rotes, resonance & wonders', rows: 4 }
+    ]
+  },
+  {
+    id: 'changeling', name: 'Changeling', full: 'Changeling: The Dreaming', icon: '🍂',
+    sections: [
+      { type: 'fields', key: 'id', title: 'Who', wide: true, fields: CLASSIC_IDENTITY.concat([
+        { k: 'kith', label: 'Kith', list: 'kiths' }, { k: 'seeming', label: 'Seeming', list: 'seemings' },
+        { k: 'court', label: 'Court', list: 'courts' }, { k: 'house', label: 'House' },
+        { k: 'legacies', label: 'Legacies (Seelie / Unseelie)', wide: true }]) },
+      SHEET_ATTRIBUTES,
+      sheetAbilities(['Alertness', 'Athletics', 'Brawl', 'Empathy', 'Expression', 'Intimidation', 'Kenning', 'Leadership', 'Streetwise', 'Subterfuge'],
+        V20_SKILLS, ['Academics', 'Computer', 'Enigmas', 'Gremayre', 'Investigation', 'Law', 'Medicine', 'Politics', 'Science', 'Technology']),
+      sheetList('arts', 'Arts', SUGGEST.arts, 5),
+      sheetTraits('realm', 'Realms', ['Actor', 'Fae', 'Nature', 'Prop', 'Scene', 'Time'], 0, 5),
+      sheetList('backgrounds', 'Backgrounds', SUGGEST.changelingBackgrounds, 5),
+      { type: 'pool', key: 'glamour', title: 'Glamour', max: 10, min: 0 },
+      { type: 'pool', key: 'banality', title: 'Banality', max: 10, min: 0 },
+      SHEET_WILLPOWER,
+      { type: 'counter', key: 'nightmare', title: 'Nightmare', defaultMax: 10, limit: 10 },
+      SHEET_HEALTH,
+      { type: 'text', key: 'cantrips', title: 'Cantrips, chimera & treasures', rows: 4 }
+    ]
+  },
+  {
+    id: 'wraith', name: 'Wraith', full: 'Wraith: The Oblivion', icon: '⛓️',
+    sections: [
+      { type: 'fields', key: 'id', title: 'Who', wide: true, fields: CLASSIC_IDENTITY.concat([
+        { k: 'guild', label: 'Guild', list: 'guilds' }, { k: 'legion', label: 'Legion' }, { k: 'faction', label: 'Faction' },
+        { k: 'circle', label: 'Circle' }, { k: 'shadow', label: 'Shadow archetype' }, { k: 'life', label: 'Life', wide: true }, { k: 'death', label: 'Death', wide: true }]) },
+      SHEET_ATTRIBUTES,
+      sheetAbilities(V20_TALENTS,
+        ['Crafts', 'Drive', 'Etiquette', 'Firearms', 'Larceny', 'Meditation', 'Melee', 'Performance', 'Stealth', 'Survival'],
+        ['Academics', 'Bureaucracy', 'Computer', 'Enigmas', 'Investigation', 'Law', 'Linguistics', 'Medicine', 'Occult', 'Science']),
+      sheetList('arcanoi', 'Arcanoi', SUGGEST.arcanoi, 5),
+      sheetList('backgrounds', 'Backgrounds', SUGGEST.wraithBackgrounds, 5),
+      sheetList('passions', 'Passions', [], 5, 'For example: Protect my daughter (Love).'),
+      sheetList('fetters', 'Fetters', [], 5),
+      { type: 'pool', key: 'pathos', title: 'Pathos', max: 10, min: 0 },
+      SHEET_WILLPOWER,
+      { type: 'counter', key: 'corpus', title: 'Corpus', defaultMax: 10, limit: 10 },
+      { type: 'pool', key: 'angst', title: 'Angst (Shadow)', max: 10, min: 0 },
+      sheetList('thorns', 'Thorns (Shadow)', [], 5),
+      sheetList('darkPassions', 'Dark Passions (Shadow)', [], 5)
+    ]
+  },
+  {
+    id: 'hunter', name: 'Hunter', full: 'Hunter: The Reckoning', icon: '🔦',
+    sections: [
+      { type: 'fields', key: 'id', title: 'Who', wide: true, fields: CLASSIC_IDENTITY.concat([
+        { k: 'creed', label: 'Creed', list: 'creeds' }, { k: 'camp', label: 'Camp' }, { k: 'cell', label: 'Cell / Handle' }]) },
+      SHEET_ATTRIBUTES,
+      sheetAbilities(['Alertness', 'Athletics', 'Awareness', 'Brawl', 'Dodge', 'Empathy', 'Expression', 'Intimidation', 'Streetwise', 'Subterfuge'],
+        ['Animal Ken', 'Crafts', 'Demolitions', 'Drive', 'Etiquette', 'Firearms', 'Insight', 'Melee', 'Security', 'Stealth', 'Survival'],
+        ['Academics', 'Bureaucracy', 'Computer', 'Finance', 'Investigation', 'Law', 'Linguistics', 'Medicine', 'Occult', 'Politics', 'Science']),
+      sheetList('edges', 'Edges', SUGGEST.edges, 5),
+      sheetList('backgrounds', 'Backgrounds', SUGGEST.hunterBackgrounds, 5),
+      sheetTraits('virtue', 'Virtues', ['Mercy', 'Vision', 'Zeal'], 0, 10),
+      { type: 'pool', key: 'conviction', title: 'Conviction', max: 10, min: 0 },
+      SHEET_WILLPOWER,
+      SHEET_HEALTH
+    ]
+  },
+  {
+    id: 'demon', name: 'Demon', full: 'Demon: The Fallen', icon: '🔥',
+    sections: [
+      { type: 'fields', key: 'id', title: 'Who', wide: true, fields: CLASSIC_IDENTITY.concat([
+        { k: 'house', label: 'House', list: 'houses' }, { k: 'faction', label: 'Faction', list: 'factions' },
+        { k: 'celestialName', label: 'Celestial name' }, { k: 'host', label: 'Host (mortal body)' }, { k: 'visage', label: 'Visage' }]) },
+      SHEET_ATTRIBUTES,
+      sheetAbilities(['Alertness', 'Athletics', 'Awareness', 'Brawl', 'Dodge', 'Empathy', 'Expression', 'Intimidation', 'Leadership', 'Streetwise', 'Subterfuge'],
+        ['Animal Ken', 'Crafts', 'Demolitions', 'Drive', 'Etiquette', 'Firearms', 'Melee', 'Performance', 'Security', 'Stealth', 'Survival'],
+        ['Academics', 'Computer', 'Finance', 'Investigation', 'Law', 'Linguistics', 'Medicine', 'Occult', 'Politics', 'Religion', 'Science']),
+      sheetList('lores', 'Lores', SUGGEST.lores, 5),
+      sheetList('backgrounds', 'Backgrounds', SUGGEST.demonBackgrounds, 5),
+      sheetTraits('virtue', 'Virtues', ['Conscience', 'Conviction', 'Courage'], 1, 5),
+      { type: 'pool', key: 'faith', title: 'Faith', max: 10, min: 0 },
+      { type: 'pool', key: 'torment', title: 'Torment', max: 10, min: 0 },
+      SHEET_WILLPOWER,
+      SHEET_HEALTH,
+      { type: 'text', key: 'apocalyptic', title: 'Apocalyptic form & pacts', rows: 4 }
+    ]
+  },
+  {
+    id: 'ghoul', name: 'Ghoul', full: 'Ghoul (Vampire: The Masquerade)', icon: '🩸',
+    sections: [
+      { type: 'fields', key: 'id', title: 'Who', wide: true, fields: CLASSIC_IDENTITY.concat([
+        { k: 'domitor', label: 'Domitor' }, { k: 'clan', label: "Domitor's clan", list: 'clans' }, { k: 'family', label: 'Family (revenants)' }]) },
+      SHEET_ATTRIBUTES,
+      sheetAbilities(V20_TALENTS, V20_SKILLS, V20_KNOWLEDGES),
+      sheetList('disciplines', 'Disciplines', SUGGEST.disciplines, 5),
+      sheetList('backgrounds', 'Backgrounds', SUGGEST.vampireBackgrounds, 5),
+      sheetTraits('virtue', 'Virtues', ['Conscience', 'Self-Control', 'Courage'], 1, 5),
+      sheetMorality('Humanity'),
+      SHEET_WILLPOWER,
+      { type: 'counter', key: 'blood', title: 'Vitae in the body', defaultMax: 10, limit: 20 },
+      SHEET_HEALTH
+    ]
+  },
+  {
+    id: 'mortal', name: 'Mortal', full: 'Mortal, Kinfolk or Sorcerer', icon: '🧍',
+    sections: [
+      { type: 'fields', key: 'id', title: 'Who', wide: true, fields: CLASSIC_IDENTITY.concat([
+        { k: 'affiliation', label: 'Affiliation' }, { k: 'occupation', label: 'Occupation' }]) },
+      SHEET_ATTRIBUTES,
+      sheetAbilities(V20_TALENTS, V20_SKILLS, V20_KNOWLEDGES),
+      sheetList('backgrounds', 'Backgrounds', SUGGEST.mortalBackgrounds, 5),
+      sheetList('numina', 'Numina, paths & true faith', SUGGEST.numina, 5),
+      sheetTraits('virtue', 'Virtues', ['Conscience', 'Self-Control', 'Courage'], 1, 5),
+      sheetMorality('Humanity'),
+      SHEET_WILLPOWER,
+      SHEET_HEALTH
+    ]
+  },
+  {
+    id: 'crossover', name: 'Crossover', full: 'Crossover / other universe', icon: '🌀',
+    sections: [
+      { type: 'fields', key: 'id', title: 'Who', wide: true, fields: CLASSIC_IDENTITY.concat([
+        { k: 'species', label: 'Species / kind' }, { k: 'origin', label: 'Universe of origin' }, { k: 'affiliation', label: 'Affiliation' }]) },
+      SHEET_ATTRIBUTES,
+      sheetAbilities(V20_TALENTS, V20_SKILLS, V20_KNOWLEDGES),
+      sheetList('powers', 'Powers', [], 'scaled', 'Anything supernatural: Time Lord abilities, psychic gifts, alien biology…'),
+      sheetList('backgrounds', 'Backgrounds', [], 5),
+      sheetMorality('Humanity / Morality', [{ k: 'moralityName', label: 'Name of their code' }]),
+      SHEET_WILLPOWER,
+      SHEET_HEALTH
+    ]
+  }
+];
+
+function sheetTemplate(id) {
+  return SHEET_TEMPLATES.find((t) => t.id === id) || SHEET_TEMPLATES[SHEET_TEMPLATES.length - 1];
+}
+
+function sheetSections(sheet) {
+  return sheetTemplate(sheet.template).sections.concat(SHEET_TAIL);
+}
+
+function slug(text) {
+  return String(text).toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function traitName(t) { return typeof t === 'string' ? t : t.n; }
+function traitKey(section, t) { return section.key + '.' + (t.k || slug(traitName(t))); }
+
+// Values live in sheet.vals. A path like "disciplines/0/d" reaches into lists.
+function getPath(vals, path) {
+  return String(path).split('/').reduce((obj, part) => (obj === null || obj === undefined ? undefined : obj[part]), vals);
+}
+
+function setPath(vals, path, value) {
+  const parts = String(path).split('/');
+  let obj = vals;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const part = parts[i];
+    if (obj[part] === null || typeof obj[part] !== 'object') obj[part] = /^\d+$/.test(parts[i + 1]) ? [] : {};
+    obj = obj[part];
+  }
+  obj[parts[parts.length - 1]] = value;
+}
+
+function num(v, fallback) {
+  const n = Number(v);
+  return isFinite(n) && v !== '' && v !== null && v !== undefined ? n : fallback;
+}
+
+function sheetMax(sheet, section) {
+  if (section.max === 'scaled' || section.scaled) return Math.max(5, Math.min(10, num(sheet.maxDots, 5)));
+  return section.max || 5;
+}
+
+const GENERATION_BLOOD = { 3: [100, 'unknown'], 4: [50, 10], 5: [40, 8], 6: [30, 6], 7: [20, 4], 8: [15, 3], 9: [14, 2], 10: [13, 1], 11: [12, 1], 12: [11, 1], 13: [10, 1], 14: [10, 1], 15: [10, 1] };
+
+function counterMax(sheet, section) {
+  const v = sheet.vals[section.key] || {};
+  if (num(v.max, 0) > 0) return Math.min(section.limit || 50, num(v.max, 0));
+  if (section.perTurn) {
+    const gen = GENERATION_BLOOD[parseInt(sheet.vals.generation, 10)];
+    if (gen) return Math.min(section.limit || 50, gen[0]);
+  }
+  return section.defaultMax || 10;
+}
+
+function newSheet(templateId) {
+  return { template: templateId, maxDots: 5, vals: {} };
+}
+
+function cloneSheet(sheet) {
+  const copy = JSON.parse(JSON.stringify(sheet || {}));
+  copy.vals = copy.vals || {};
+  delete copy.updated;
+  delete copy.updatedBy;
+  return copy;
+}
+
+// Leave out empty values, so sheets stay small on the phone and in the Google Sheet.
+function pruneSheet(sheet) {
+  const out = { template: sheet.template, maxDots: num(sheet.maxDots, 5), vals: {} };
+  const keepRow = (row) => row && Object.keys(row).some((k) => row[k] !== '' && row[k] !== 0 && row[k] !== null && row[k] !== undefined);
+  Object.keys(sheet.vals || {}).forEach((k) => {
+    let v = sheet.vals[k];
+    if (k === 'health') {
+      if (Array.isArray(v) && v.some(Boolean)) out.vals.health = v.slice();
+      return;
+    }
+    if (k === 'blocks' && Array.isArray(v)) {
+      v = v.map((block) => Object.assign({}, block, { r: (Array.isArray(block.r) ? block.r : []).filter(keepRow) }))
+        .filter((block) => block.t || block.r.length || String(block.text || '').trim());
+      if (v.length) out.vals.blocks = v;
+      return;
+    }
+    if (Array.isArray(v)) {
+      v = v.filter(keepRow);
+      if (!v.length) return;
+    } else if (v && typeof v === 'object') {
+      if (!keepRow(v)) return;
+    } else if (v === '' || v === null || v === undefined) {
+      return;
+    }
+    out.vals[k] = v;
+  });
+  return out;
+}
+
+/* ---- Drawing a sheet ---- */
+// mode: 'view' (trackers can be tapped), 'edit' (everything can be changed), 'read' (nothing can be changed)
+function dotsHtml(path, value, max, min, mode, label) {
+  let html = '<span class="dots" role="group" aria-label="' + esc(label) + ': ' + value + ' of ' + max + '">';
+  for (let i = 1; i <= max; i++) {
+    const cls = 'dot' + (i <= value ? ' on' : '') + (i === 6 ? ' sixth' : '');
+    html += mode === 'edit'
+      ? '<button type="button" class="' + cls + '" data-set="' + esc(path) + '" data-v="' + i + '" data-min="' + min + '" aria-label="' + i + '"></button>'
+      : '<span class="' + cls + '"></span>';
+  }
+  return html + '</span>';
+}
+
+function boxesHtml(path, value, count, mode, label) {
+  let html = '<span class="boxes" role="group" aria-label="' + esc(label) + ': ' + value + ' of ' + count + '">';
+  for (let i = 1; i <= count; i++) {
+    const cls = 'box' + (i <= value ? ' on' : '');
+    html += mode === 'read'
+      ? '<span class="' + cls + '"></span>'
+      : '<button type="button" class="' + cls + '" data-box="' + esc(path) + '" data-v="' + i + '" aria-label="' + i + '"></button>';
+  }
+  return html + '</span>';
+}
+
+function traitRow(label, path, value, max, min, mode, rollable) {
+  return '<div class="trait"' + (rollable ? ' data-roll="' + esc(label) + '" data-roll-v="' + value + '"' : '') + '>' +
+    '<span class="trait-name">' + esc(label) + '</span>' + dotsHtml(path, value, max, min, mode, label) + '</div>';
+}
+
+function fieldInput(path, value, opts) {
+  return '<input data-path="' + esc(path) + '"' + (opts.num ? ' inputmode="numeric" data-num="1"' : '') +
+    (opts.list ? ' list="sl-' + esc(opts.list) + '"' : '') + ' value="' + esc(value === undefined ? '' : value) + '"' +
+    (opts.placeholder ? ' placeholder="' + esc(opts.placeholder) + '"' : '') + ' autocomplete="off">';
+}
+
+function sheetSectionHtml(sheet, section, mode) {
+  const vals = sheet.vals;
+  const edit = mode === 'edit';
+  const title = section.title ? '<h3 class="sheet-h">' + esc(section.title) + '</h3>' : '';
+  let body = '';
+
+  if (section.type === 'fields') {
+    const fields = section.fields.filter((f) => edit || (vals[f.k] !== undefined && vals[f.k] !== ''));
+    if (!fields.length) return '';
+    body = '<div class="sheet-fields">' + fields.map((f) =>
+      '<label class="sheet-field' + (f.wide ? ' wide' : '') + '"><span>' + esc(f.label) + '</span>' +
+        (edit ? fieldInput(f.k, vals[f.k], { num: f.num, list: f.list }) : '<strong>' + esc(vals[f.k]) + '</strong>') +
+      '</label>').join('') + '</div>';
+    if (section.key === 'xpf' && !edit) {
+      const left = num(vals.xpTotal, 0) - num(vals.xpSpent, 0);
+      body += '<p class="muted small">Unspent: <strong>' + left + '</strong></p>';
+    }
+  } else if (section.type === 'traits') {
+    const max = sheetMax(sheet, section);
+    const min = section.min || 0;
+    const fields = (section.fields || []).filter((f) => edit || (vals[f.k] !== undefined && vals[f.k] !== ''));
+    body = (fields.length ? '<div class="sheet-fields">' + fields.map((f) =>
+      '<label class="sheet-field"><span>' + esc(f.label) + '</span>' +
+        (edit ? fieldInput(f.k, vals[f.k], {}) : '<strong>' + esc(vals[f.k]) + '</strong>') + '</label>').join('') + '</div>' : '') +
+      '<div class="trait-groups">' + section.groups.map((g) => {
+      const extraPath = section.key + '+' + slug(g.title);
+      const extras = section.extra ? (vals[extraPath] || []) : [];
+      let rows = g.traits.map((t) => {
+        const key = traitKey(section, t);
+        const value = num(vals[key], min);
+        if (mode !== 'edit' && section.extra && value === 0) return traitRow(traitName(t), key, 0, max, min, mode, true).replace('class="trait"', 'class="trait zero"');
+        return traitRow(traitName(t), key, value, max, min, mode, true);
+      }).join('');
+      rows += extras.map((row, i) => edit
+        ? '<div class="trait custom">' + fieldInput(extraPath + '/' + i + '/n', row.n, { placeholder: 'Other ' + (g.title || 'trait').toLowerCase().replace(/s$/, '') }) +
+            dotsHtml(extraPath + '/' + i + '/d', num(row.d, 0), max, 0, mode, row.n || 'trait') +
+            '<button type="button" class="row-del" data-del="' + esc(extraPath) + '" data-i="' + i + '" aria-label="Remove">✕</button></div>'
+        : (row.n ? traitRow(row.n, '', num(row.d, 0), max, 0, mode, true) : '')).join('');
+      if (edit && section.extra) rows += '<button type="button" class="btn small add-row" data-add="' + esc(extraPath) + '">＋ Add ' + esc((g.title || 'trait').toLowerCase().replace(/s$/, '')) + '</button>';
+      return '<div class="trait-group">' + (g.title ? '<h4>' + esc(g.title) + '</h4>' : '') + rows + '</div>';
+    }).join('') + '</div>';
+  } else if (section.type === 'list') {
+    const max = sheetMax(sheet, section);
+    const rows = vals[section.key] || [];
+    if (!edit && !rows.some((r) => r.n)) return '';
+    body = rows.map((row, i) => edit
+      ? '<div class="trait custom' + (section.note ? ' with-note' : '') + '">' + fieldInput(section.key + '/' + i + '/n', row.n, { list: section.suggest.length ? 'list-' + section.key : '', placeholder: 'Name' }) +
+          dotsHtml(section.key + '/' + i + '/d', num(row.d, 0), max, 0, mode, row.n || section.title) +
+          '<button type="button" class="row-del" data-del="' + esc(section.key) + '" data-i="' + i + '" aria-label="Remove">✕</button>' +
+          (section.note ? fieldInput(section.key + '/' + i + '/x', row.x, { placeholder: 'Short note (optional)' }) : '') + '</div>'
+      : (row.n ? traitRow(row.n, '', num(row.d, 0), max, 0, mode, true) + (row.x ? '<div class="trait-note">' + esc(row.x) + '</div>' : '') : '')).join('');
+    if (edit) {
+      body += '<button type="button" class="btn small add-row" data-add="' + esc(section.key) + '">＋ Add</button>';
+      if (section.hint) body += '<p class="hint">' + esc(section.hint) + '</p>';
+      if (section.suggest.length) body += '<datalist id="sl-list-' + esc(section.key) + '">' + section.suggest.map((s) => '<option value="' + esc(s) + '">').join('') + '</datalist>';
+    }
+  } else if (section.type === 'pool') {
+    const v = vals[section.key] || {};
+    const perm = num(v.p, section.min || 0);
+    const temp = num(v.t, perm);
+    body = '<div class="trait" data-roll="' + esc(section.title) + '" data-roll-v="' + perm + '"><span class="trait-name">Permanent</span>' +
+        dotsHtml(section.key + '/p', perm, section.max, section.min || 0, mode, section.title + ' (permanent)') + '</div>' +
+      '<div class="trait"><span class="trait-name">Current</span>' +
+        boxesHtml(section.key + '/t', temp, section.max, mode, section.title + ' (current)') + '</div>';
+  } else if (section.type === 'counter') {
+    const v = vals[section.key] || {};
+    const max = counterMax(sheet, section);
+    const cur = Math.min(max, num(v.c, max));
+    body = '<div class="counter-head"><span class="counter-num">' + cur + ' / ' + max + '</span>' +
+      (mode !== 'read' ? '<span class="counter-btns"><button type="button" class="btn small" data-count="' + esc(section.key) + '" data-step="-1" aria-label="One less">−</button>' +
+        '<button type="button" class="btn small" data-count="' + esc(section.key) + '" data-step="1" aria-label="One more">＋</button></span>' : '') + '</div>' +
+      boxesHtml(section.key + '/c', cur, max, mode, section.title);
+    if (edit) {
+      body += '<label class="sheet-field"><span>Maximum' + (section.perTurn ? ' (empty = from Generation)' : '') + '</span>' +
+        fieldInput(section.key + '/max', v.max, { num: true }) + '</label>';
+    }
+    if (section.perTurn) {
+      const gen = GENERATION_BLOOD[parseInt(vals.generation, 10)];
+      if (gen) body += '<p class="muted small">' + parseInt(vals.generation, 10) + 'th generation: up to ' + gen[1] + ' blood per turn.</p>';
+    }
+  } else if (section.type === 'health') {
+    const marks = healthMarks(sheet);
+    body = '<div class="health">' + HEALTH_LEVELS.map((lv, i) =>
+      '<div class="health-row"><span class="trait-name">' + lv[0] + '</span><span class="muted small">' + (lv[1] === null ? '' : (lv[1] === 0 ? '' : lv[1])) + '</span>' +
+        (mode === 'read' ? '<span class="hbox m' + markClass(marks[i]) + '">' + markSymbol(marks[i]) + '</span>'
+          : '<button type="button" class="hbox m' + markClass(marks[i]) + '" data-health="' + i + '" aria-label="' + lv[0] + ': ' + markName(marks[i]) + '">' + markSymbol(marks[i]) + '</button>') +
+      '</div>').join('') + '</div>' +
+      '<p class="muted small">' + woundText(sheet) + (mode !== 'read' ? ' Tap a box: / bashing → X lethal → ✱ aggravated → empty.' : '') + '</p>';
+  } else if (section.type === 'blocks') {
+    // Special blocks: as many as needed, each with its own name, abilities and description.
+    // For example "Bloodline powers", "Sacred weapon", "Personal powers".
+    const max = Math.max(5, Math.min(10, num(sheet.maxDots, 5)));
+    const blocks = Array.isArray(vals.blocks) ? vals.blocks : [];
+    let html = blocks.map((block, b) => {
+      const base = 'blocks/' + b;
+      const rows = Array.isArray(block.r) ? block.r : [];
+      if (!edit) {
+        if (!block.t && !rows.some((r) => r.n) && !String(block.text || '').trim()) return '';
+        return '<section class="sheet-sec sheet-type-block">' +
+          '<h3 class="sheet-h">✦ ' + esc(block.t || 'Special') + '</h3>' +
+          rows.map((row) => !row.n ? '' : (num(row.d, 0) > 0
+            ? traitRow(row.n, '', num(row.d, 0), max, 0, mode, true)
+            : '<div class="trait"><span class="trait-name"><strong>' + esc(row.n) + '</strong></span></div>') +
+            (row.x ? '<div class="trait-note">' + esc(row.x) + '</div>' : '')).join('') +
+          (String(block.text || '').trim() ? '<div class="content sheet-text">' + renderMarkdown(block.text, '') + '</div>' : '') +
+        '</section>';
+      }
+      return '<section class="sheet-sec sheet-type-block editing">' +
+        '<div class="block-head">' + fieldInput(base + '/t', block.t, { placeholder: 'Name of the block, e.g. Bloodline powers' }) +
+          '<button type="button" class="btn small danger" data-del="blocks" data-i="' + b + '" data-confirm="Remove the whole block' + (block.t ? ' &quot;' + esc(block.t) + '&quot;' : '') + '?">Remove block</button></div>' +
+        rows.map((row, i) =>
+          '<div class="trait custom with-note">' + fieldInput(base + '/r/' + i + '/n', row.n, { placeholder: 'Ability or power' }) +
+            dotsHtml(base + '/r/' + i + '/d', num(row.d, 0), max, 0, mode, row.n || 'ability') +
+            '<button type="button" class="row-del" data-del="' + base + '/r" data-i="' + i + '" aria-label="Remove">✕</button>' +
+            fieldInput(base + '/r/' + i + '/x', row.x, { placeholder: 'What it does (optional)' }) + '</div>').join('') +
+        '<button type="button" class="btn small add-row" data-add="' + base + '/r">＋ Add an ability</button>' +
+        '<label class="sheet-field wide"><span>Description (optional)</span><textarea data-path="' + base + '/text" rows="3">' + esc(block.text || '') + '</textarea></label>' +
+        '<p class="hint">Dots are optional. Leave them empty for a power without a rating.</p>' +
+      '</section>';
+    }).join('');
+    if (edit) {
+      html += '<section class="sheet-sec sheet-type-block-add wide">' +
+        '<h3 class="sheet-h">✦ Special blocks</h3>' +
+        '<p class="hint">Add your own blocks for anything special to this character: bloodline powers, a sacred weapon, personal powers, a pact, a curse… Each block has its own name and as many abilities as you like.</p>' +
+        '<button type="button" class="btn small primary" data-add-block="1">＋ Add a special block</button>' +
+      '</section>';
+    }
+    return html;
+  } else if (section.type === 'merits') {
+    const rows = vals.merits || [];
+    if (!edit && !rows.some((r) => r.n)) return '';
+    body = rows.map((row, i) => edit
+      ? '<div class="trait custom merit">' + fieldInput('merits/' + i + '/n', row.n, { placeholder: 'Name' }) +
+          '<select data-path="merits/' + i + '/t"><option value="m"' + (row.t !== 'f' ? ' selected' : '') + '>Merit</option><option value="f"' + (row.t === 'f' ? ' selected' : '') + '>Flaw</option></select>' +
+          fieldInput('merits/' + i + '/p', row.p, { num: true, placeholder: 'pts' }) +
+          '<button type="button" class="row-del" data-del="merits" data-i="' + i + '" aria-label="Remove">✕</button></div>'
+      : (row.n ? '<div class="trait"><span class="trait-name">' + esc(row.n) + '</span><span class="muted small">' +
+          (row.t === 'f' ? 'Flaw' : 'Merit') + (row.p ? ' · ' + esc(row.p) + ' pt' : '') + '</span></div>' : '')).join('');
+    if (edit) body += '<button type="button" class="btn small add-row" data-add="merits">＋ Add</button>';
+  } else if (section.type === 'trackers') {
+    const rows = vals.trackers || [];
+    if (!edit && !rows.some((r) => r.n)) return '';
+    body = rows.map((row, i) => {
+      const max = Math.max(1, Math.min(50, num(row.m, 10)));
+      const cur = Math.min(max, num(row.c, max));
+      return edit
+        ? '<div class="trait custom tracker-edit">' + fieldInput('trackers/' + i + '/n', row.n, { placeholder: 'e.g. Regenerations' }) +
+            '<label class="tiny">max' + fieldInput('trackers/' + i + '/m', row.m, { num: true, placeholder: '10' }) + '</label>' +
+            '<button type="button" class="row-del" data-del="trackers" data-i="' + i + '" aria-label="Remove">✕</button>' +
+            boxesHtml('trackers/' + i + '/c', cur, max, mode, row.n || 'tracker') + '</div>'
+        : (row.n ? '<div class="tracker"><div class="counter-head"><span class="trait-name">' + esc(row.n) + '</span><span class="counter-num">' + cur + ' / ' + max + '</span></div>' +
+            boxesHtml('trackers/' + i + '/c', cur, max, mode, row.n) + '</div>' : '');
+    }).join('');
+    if (edit) {
+      body += '<button type="button" class="btn small add-row" data-add="trackers">＋ Add a tracker</button>';
+      if (section.hint) body += '<p class="hint">' + esc(section.hint) + '</p>';
+    }
+  } else if (section.type === 'text') {
+    const text = vals[section.key] || '';
+    if (!edit && !text.trim()) return '';
+    body = edit
+      ? '<textarea data-path="' + esc(section.key) + '" rows="' + (section.rows || 4) + '">' + esc(text) + '</textarea>'
+      : '<div class="content sheet-text">' + renderMarkdown(text, '') + '</div>';
+  }
+  return '<section class="sheet-sec sheet-type-' + section.type + (section.wide ? ' wide' : '') + '">' + title + body + '</section>';
+}
+
+function sheetHtml(sheet, mode) {
+  const lists = new Set();
+  sheetSections(sheet).forEach((s) => { if (s.type === 'fields') s.fields.forEach((f) => { if (f.list) lists.add(f.list); }); });
+  const datalists = mode === 'edit' ? Array.from(lists).map((name) =>
+    '<datalist id="sl-' + esc(name) + '">' + (SUGGEST[name] || []).map((s) => '<option value="' + esc(s) + '">').join('') + '</datalist>').join('') : '';
+  // Small sections (Virtues, Willpower, Blood…) sit side by side on wide screens.
+  return '<div class="sheet-grid">' + sheetSections(sheet).map((s) => sheetSectionHtml(sheet, s, mode)).join('') + '</div>' + datalists;
+}
+
+/* ---- Health and dice ---- */
+const MARKS = ['', '/', 'X', '*'];
+function healthMarks(sheet) {
+  const h = Array.isArray(sheet.vals.health) ? sheet.vals.health : [];
+  return HEALTH_LEVELS.map((lv, i) => (MARKS.indexOf(h[i]) >= 0 ? h[i] : ''));
+}
+function markClass(m) { return m === '/' ? 'b' : m === 'X' ? 'l' : m === '*' ? 'a' : 'e'; }
+function markSymbol(m) { return m === '/' ? '/' : m === 'X' ? '✕' : m === '*' ? '✱' : ''; }
+function markName(m) { return m === '/' ? 'bashing' : m === 'X' ? 'lethal' : m === '*' ? 'aggravated' : 'unhurt'; }
+
+function cycleHealth(sheet, i) {
+  const marks = healthMarks(sheet);
+  marks[i] = MARKS[(MARKS.indexOf(marks[i]) + 1) % MARKS.length];
+  // Worst damage always fills the top boxes first, like on a paper sheet.
+  const order = { '*': 0, X: 1, '/': 2, '': 3 };
+  marks.sort((a, b) => order[a] - order[b]);
+  sheet.vals.health = marks;
+}
+
+function woundPenalty(sheet) {
+  const marks = healthMarks(sheet);
+  let worst = -1;
+  marks.forEach((m, i) => { if (m) worst = i; });
+  if (worst < 0) return { penalty: 0, level: 'Unhurt' };
+  const lv = HEALTH_LEVELS[worst];
+  return { penalty: lv[1], level: lv[0] };
+}
+
+function woundText(sheet) {
+  const w = woundPenalty(sheet);
+  if (w.level === 'Unhurt') return 'Unhurt.';
+  if (w.penalty === null) return '<strong>Incapacitated.</strong>';
+  return 'Now <strong>' + w.level + '</strong>' + (w.penalty ? ', dice penalty ' + w.penalty + '.' : '.');
+}
+
+function rollDice(pool, difficulty, specialty, willpower) {
+  const dice = [];
+  for (let i = 0; i < Math.max(0, pool); i++) {
+    const buf = new Uint32Array(1);
+    (window.crypto || window.msCrypto).getRandomValues(buf);
+    dice.push((buf[0] % 10) + 1);
+  }
+  let successes = 0;
+  let ones = 0;
+  dice.forEach((d) => {
+    if (d === 1) ones++;
+    else if (d >= difficulty) successes += (specialty && d === 10) ? 2 : 1;
+  });
+  const rolledAny = successes > 0;
+  let net = Math.max(0, successes - ones);
+  if (willpower) net += 1; // Willpower adds one success that cannot be cancelled
+  const botch = !rolledAny && ones > 0 && !willpower;
+  return { dice: dice, net: net, botch: botch, ones: ones };
+}
+
+/* ---- Saving tracker taps from the page (auto-save, also offline) ---- */
+const sheetSaves = store.get('kc_pending_sheets', {}); // pageId -> { sheet, seq }
+let sheetSaveTimer = null;
+let sheetSaving = false;
+
+function queueSheetSave(page) {
+  const prev = sheetSaves[page.id];
+  sheetSaves[page.id] = { sheet: page.sheet, seq: (prev ? prev.seq : 0) + 1, chronicleId: state.chronicleId };
+  store.set('kc_pending_sheets', sheetSaves);
+  saveChronicleData();
+  setSheetStatus('Saving…');
+  clearTimeout(sheetSaveTimer);
+  sheetSaveTimer = setTimeout(flushSheetSaves, 1200);
+}
+
+function setSheetStatus(text) {
+  const el = document.getElementById('sheet-status');
+  if (el) el.textContent = text;
+}
+
+async function flushSheetSaves() {
+  if (sheetSaving) { clearTimeout(sheetSaveTimer); sheetSaveTimer = setTimeout(flushSheetSaves, 800); return; }
+  const ids = Object.keys(sheetSaves);
+  if (!ids.length) return;
+  sheetSaving = true;
+  try {
+    for (const id of ids) {
+      const item = sheetSaves[id];
+      if (!item) continue;
+      try {
+        const saved = await api('saveSheet', { pageId: id, sheet: item.sheet });
+        const now = sheetSaves[id];
+        if (now && now.seq === item.seq) {
+          delete sheetSaves[id];
+          if (saved.chronicleId === state.chronicleId) rememberPage(saved);
+        }
+      } catch (e) {
+        if (e instanceof NetworkError) {
+          setOffline(true);
+          setSheetStatus('Offline: kept on this phone, saved when you are back online.');
+          return;
+        }
+        delete sheetSaves[id]; // the server refused it (for example, the page was deleted)
+        toast(e.message, true);
+      }
+    }
+    setSheetStatus('All changes saved.');
+  } finally {
+    sheetSaving = false;
+    store.set('kc_pending_sheets', sheetSaves);
+  }
+}
+
+// After fresh pages arrive from the server, put back tracker taps that were not saved yet.
+function applyPendingSheets() {
+  let any = false;
+  Object.keys(sheetSaves).forEach((id) => {
+    const page = pageById(id);
+    if (page && sheetSaves[id].chronicleId === state.chronicleId) { page.sheet = sheetSaves[id].sheet; any = true; }
+  });
+  if (any) { saveChronicleData(); flushSheetSaves(); }
+}
+
+/* ---- The sheet on a page ---- */
+function sheetSummary(page) {
+  if (!page.sheet) return '';
+  const t = sheetTemplate(page.sheet.template);
+  const v = page.sheet.vals || {};
+  const detail = v.clan || v.tribe || v.tradition || v.kith || v.guild || v.creed || v.house || v.species || v.domitor || '';
+  return '<span class="sheet-chip" title="Has a character sheet">' + t.icon + ' ' + esc(t.name) + (detail ? ' · ' + esc(detail) : '') + '</span>';
+}
+
+function sheetSearchText(page) {
+  if (!page.sheet || !page.sheet.vals) return '';
+  const v = page.sheet.vals;
+  const parts = [sheetTemplate(page.sheet.template).name];
+  Object.keys(v).forEach((k) => {
+    if (typeof v[k] === 'string' && k !== 'notes' && k !== 'equipment') parts.push(v[k]);
+    if (Array.isArray(v[k])) v[k].forEach((row) => {
+      if (row && row.n) parts.push(row.n);
+      if (row && row.t) parts.push(row.t);
+      if (row && Array.isArray(row.r)) row.r.forEach((r) => { if (r && r.n) parts.push(r.n); });
+    });
+  });
+  return parts.join(' ');
+}
+
+function sheetSectionForPage(page) {
+  const characterish = ['Player Characters', 'NPCs', 'Crossover Universes'].indexOf(page.category) >= 0;
+  if (!page.sheet) {
+    if (page.sheetHidden) return '';
+    return characterish
+      ? '<section class="sheet-empty card"><strong>📜 No character sheet yet.</strong> ' +
+          '<a class="btn small primary" href="#/sheet/' + encodeURIComponent(page.id) + '">＋ Add a character sheet</a></section>'
+      : '';
+  }
+  const t = sheetTemplate(page.sheet.template);
+  return '<section class="sheet" id="sheet">' +
+    '<div class="sheet-top">' +
+      '<h2>' + t.icon + ' ' + esc(t.full) + '</h2>' +
+      (page.sheetVisibility === 'gm' ? '<span class="badge badge-gm" title="Players do not see this sheet">🔒 Sheet GM only</span>' : '') +
+    '</div>' +
+    '<div class="row sheet-actions">' +
+      '<button type="button" class="btn small" id="roll-toggle">🎲 Roll dice</button>' +
+      '<a class="btn small" href="#/sheet/' + encodeURIComponent(page.id) + '">✎ Edit sheet</a>' +
+      '<span class="muted small" id="sheet-status">' + (sheetSaves[page.id] ? 'Not saved yet…' : 'Tap the boxes to track Willpower, health and pools.') + '</span>' +
+    '</div>' +
+    '<div id="roller" class="roller" hidden></div>' +
+    '<div id="sheet-body">' + sheetHtml(page.sheet, 'view') + '</div>' +
+    (page.sheet.updated ? '<p class="muted small">Sheet last changed ' + esc(formatDate(page.sheet.updated)) +
+      (page.sheet.updatedBy ? ' by ' + esc(userName(page.sheet.updatedBy)) : '') + '</p>' : '') +
+  '</section>';
+}
+
+// Taps on the sheet of a page: trackers, health, and the dice roller.
+function bindSheetView(pageId) {
+  const body = $('#sheet-body');
+  if (!body) return;
+  const roll = { on: false, picks: [], difficulty: 6, extra: 0, specialty: false, willpower: false, wounds: true, last: null };
+
+  const redraw = () => {
+    const page = pageById(pageId);
+    if (!page || !page.sheet) return;
+    body.innerHTML = sheetHtml(page.sheet, 'view');
+    markPicks();
+  };
+  const markPicks = () => {
+    $$('[data-roll]', body).forEach((el) => {
+      el.classList.toggle('pickable', roll.on);
+      el.classList.toggle('picked', roll.picks.some((p) => p.label === el.dataset.roll));
+    });
+  };
+  const change = (fn) => {
+    const page = pageById(pageId);
+    if (!page || !page.sheet) return;
+    page.sheet = cloneSheet(page.sheet);
+    fn(page.sheet);
+    redraw();
+    queueSheetSave(page);
+  };
+
+  body.addEventListener('click', (event) => {
+    const box = event.target.closest('[data-box]');
+    const health = event.target.closest('[data-health]');
+    const count = event.target.closest('[data-count]');
+    const pick = roll.on ? event.target.closest('[data-roll]') : null;
+    if (box) {
+      // Tapping the last filled box empties it; tapping any other box fills up to there.
+      const v = Number(box.dataset.v);
+      const filled = $$('[data-box="' + box.dataset.box + '"]', body).filter((b) => b.classList.contains('on')).length;
+      change((sheet) => setPath(sheet.vals, box.dataset.box, filled === v ? v - 1 : v));
+    } else if (health) {
+      change((sheet) => cycleHealth(sheet, Number(health.dataset.health)));
+    } else if (count) {
+      change((sheet) => {
+        const section = sheetSections(sheet).find((s) => s.key === count.dataset.count);
+        const max = counterMax(sheet, section);
+        const cur = Math.min(max, num(getPath(sheet.vals, section.key + '/c'), max));
+        setPath(sheet.vals, section.key + '/c', Math.max(0, Math.min(max, cur + Number(count.dataset.step))));
+      });
+    } else if (pick) {
+      const i = roll.picks.findIndex((p) => p.label === pick.dataset.roll);
+      if (i >= 0) roll.picks.splice(i, 1);
+      else roll.picks.push({ label: pick.dataset.roll, value: Number(pick.dataset.rollV) || 0 });
+      markPicks();
+      drawRoller();
+    }
+  });
+
+  const roller = $('#roller');
+  const drawRoller = () => {
+    if (!roll.on) { roller.hidden = true; return; }
+    const page = pageById(pageId);
+    const w = woundPenalty(page.sheet);
+    const penalty = roll.wounds && w.penalty ? w.penalty : 0;
+    const base = roll.picks.reduce((sum, p) => sum + p.value, 0);
+    const pool = Math.max(0, base + roll.extra + penalty);
+    let result = '';
+    if (roll.last) {
+      const r = roll.last;
+      result = '<div class="roll-result ' + (r.botch ? 'botch' : r.net ? 'success' : 'fail') + '">' +
+        '<div class="dice">' + r.dice.map((d) => '<span class="die' + (d === 1 ? ' one' : d >= r.difficulty ? ' hit' : '') + '">' + d + '</span>').join('') + '</div>' +
+        '<strong>' + (r.botch ? 'Botch!' : r.net ? r.net + (r.net === 1 ? ' success' : ' successes') : 'Failure') + '</strong>' +
+        '<span class="muted small"> · ' + r.pool + ' dice at difficulty ' + r.difficulty + (r.specialty ? ', specialty' : '') + (r.willpower ? ', Willpower' : '') + '</span>' +
+      '</div>';
+    }
+    roller.hidden = false;
+    roller.innerHTML =
+      '<p class="small">' + (roll.picks.length
+        ? 'Rolling: ' + roll.picks.map((p) => '<strong>' + esc(p.label) + '</strong> ' + p.value).join(' + ')
+        : 'Tap the traits to roll on the sheet below (for example Dexterity and Firearms), or set the dice by hand.') + '</p>' +
+      '<div class="roll-controls">' +
+        '<div class="stepper"><span>Dice</span><button type="button" class="btn small" data-r="extra" data-step="-1">−</button><strong>' + pool + '</strong><button type="button" class="btn small" data-r="extra" data-step="1">＋</button></div>' +
+        '<div class="stepper"><span>Difficulty</span><button type="button" class="btn small" data-r="difficulty" data-step="-1">−</button><strong>' + roll.difficulty + '</strong><button type="button" class="btn small" data-r="difficulty" data-step="1">＋</button></div>' +
+      '</div>' +
+      '<div class="roll-options">' +
+        '<label><input type="checkbox" data-r="specialty"' + (roll.specialty ? ' checked' : '') + '> Specialty (10s count twice)</label>' +
+        '<label><input type="checkbox" data-r="willpower"' + (roll.willpower ? ' checked' : '') + '> Spend Willpower (+1 success)</label>' +
+        (w.penalty ? '<label><input type="checkbox" data-r="wounds"' + (roll.wounds ? ' checked' : '') + '> Wound penalty ' + w.penalty + ' (' + esc(w.level) + ')</label>' : '') +
+      '</div>' +
+      '<div class="row"><button type="button" class="btn primary" data-r="roll">🎲 Roll ' + pool + (pool === 1 ? ' die' : ' dice') + '</button>' +
+        '<button type="button" class="btn small" data-r="clear">Clear</button></div>' +
+      result;
+  };
+
+  roller.addEventListener('click', (event) => {
+    const el = event.target.closest('[data-r]');
+    if (!el || el.tagName === 'INPUT') return;
+    const what = el.dataset.r;
+    if (what === 'extra') roll.extra += Number(el.dataset.step);
+    if (what === 'difficulty') roll.difficulty = Math.max(2, Math.min(10, roll.difficulty + Number(el.dataset.step)));
+    if (what === 'clear') { roll.picks = []; roll.extra = 0; roll.last = null; markPicks(); }
+    if (what === 'roll') {
+      const page = pageById(pageId);
+      const w = woundPenalty(page.sheet);
+      const pool = Math.max(0, roll.picks.reduce((s, p) => s + p.value, 0) + roll.extra + (roll.wounds && w.penalty ? w.penalty : 0));
+      if (!pool && !roll.willpower) { toast('There are no dice to roll. Tap some traits or press ＋.', true); return; }
+      roll.last = Object.assign(rollDice(pool, roll.difficulty, roll.specialty, roll.willpower),
+        { pool: pool, difficulty: roll.difficulty, specialty: roll.specialty, willpower: roll.willpower });
+      if (roll.willpower) {
+        // Spending Willpower takes one point from the current Willpower boxes.
+        change((sheet) => {
+          const v = sheet.vals.willpower || {};
+          const perm = num(v.p, 1);
+          const temp = num(v.t, perm);
+          if (temp > 0) setPath(sheet.vals, 'willpower/t', temp - 1);
+        });
+        roll.willpower = false;
+      }
+    }
+    drawRoller();
+  });
+  roller.addEventListener('change', (event) => {
+    const el = event.target.closest('input[data-r]');
+    if (!el) return;
+    roll[el.dataset.r] = el.checked;
+    drawRoller();
+  });
+
+  on('#roll-toggle', 'click', (event) => {
+    roll.on = !roll.on;
+    event.currentTarget.classList.toggle('primary', roll.on);
+    event.currentTarget.textContent = roll.on ? '✕ Close dice' : '🎲 Roll dice';
+    markPicks();
+    drawRoller();
+  });
+}
+
+/* ---- Screen: create or edit a sheet ---- */
+function sheetDraftKey(pageId) {
+  return 'kc_sheetdraft_' + state.chronicleId + '_' + pageId;
+}
+
+function sheetSources(page) {
+  // Other pages whose sheet can be copied: the other versions of this person first.
+  const versions = page.identityId ? state.pages.filter((p) => p.identityId === page.identityId && p.id !== page.id && p.sheet) : [];
+  const others = state.pages.filter((p) => p.sheet && p.id !== page.id && versions.indexOf(p) < 0).sort(byTitle);
+  return { versions: versions.sort(byReality), others: others };
+}
+
+function viewSheetEditor(pageId, query) {
+  const page = pageById(pageId);
+  if (!page) return '<div class="narrow"><h1>Page not found</h1><a class="btn" href="#/">Back</a></div>';
+  if (page.sheetHidden) return '<div class="narrow"><h1>Not available</h1><a class="btn" href="#/p/' + encodeURIComponent(page.id) + '">Back</a></div>';
+  const draft = store.get(sheetDraftKey(pageId), null);
+
+  // No sheet yet and nothing chosen: pick the kind of character first.
+  if (!page.sheet && !draft && !query.template && !query.copy) {
+    const sources = sheetSources(page);
+    return '<div class="narrow">' +
+      '<p class="crumbs"><a href="#/p/' + encodeURIComponent(page.id) + '">' + esc(page.title) + '</a> ›</p>' +
+      '<h1>New character sheet</h1>' +
+      (sources.versions.length ? '<h2>🌀 Start from another version</h2><p class="muted small">Copies everything from that version\'s sheet. Then change what is different in this reality.</p>' +
+        '<div class="version-grid">' + sources.versions.map((p) =>
+          '<a class="version-card" href="#/sheet/' + encodeURIComponent(page.id) + '?copy=' + encodeURIComponent(p.id) + '" style="--rc:' + safeColor((realityById(p.realityId) || {}).color) + '">' +
+            '<span class="version-text"><span class="version-title">' + esc(p.title) + '</span><span>' + realityChip(p.realityId) + ' ' + sheetSummary(p) + '</span></span></a>').join('') +
+        '</div>' : '') +
+      '<h2>What kind of character?</h2>' +
+      '<div class="template-grid">' + SHEET_TEMPLATES.map((t) =>
+        '<a class="template-card" href="#/sheet/' + encodeURIComponent(page.id) + '?template=' + t.id + '"><span class="template-icon">' + t.icon + '</span>' +
+          '<span><strong>' + esc(t.name) + '</strong><br><span class="muted small">' + esc(t.full) + '</span></span></a>').join('') +
+      '</div>' +
+      (sources.others.length ? '<details class="copy-other"><summary>Copy the sheet of another page</summary><ul class="page-list">' +
+        sources.others.map((p) => '<li class="page-item"><a href="#/sheet/' + encodeURIComponent(page.id) + '?copy=' + encodeURIComponent(p.id) + '">' +
+          '<span class="page-item-text"><span class="page-item-title">' + esc(p.title) + '</span><span class="page-item-meta">' + sheetSummary(p) + ' ' + realityChip(p.realityId) + '</span></span></a></li>').join('') +
+        '</ul></details>' : '') +
+      '<a class="btn" href="#/p/' + encodeURIComponent(page.id) + '">Cancel</a>' +
+    '</div>';
+  }
+
+  return '<div class="narrow wide-sheet">' +
+    '<p class="crumbs"><a href="#/p/' + encodeURIComponent(page.id) + '">' + esc(page.title) + '</a> ›</p>' +
+    '<h1>' + (page.sheet ? 'Edit character sheet' : 'New character sheet') + '</h1>' +
+    (draft ? '<div class="notice">Your unsaved changes were restored. <button type="button" class="btn small" id="discard-sheet-draft">Discard them</button></div>' : '') +
+    '<form id="sheet-form" class="form keep-open">' +
+      '<div class="two-col">' +
+        '<label>Kind of character<select name="template">' + SHEET_TEMPLATES.map((t) => '<option value="' + t.id + '">' + t.icon + ' ' + esc(t.full) + '</option>').join('') + '</select>' +
+          '<span class="hint">Changing it keeps everything you already filled in.</span></label>' +
+        '<label>Highest dot rating<select name="maxDots">' + [5, 6, 7, 8, 9, 10].map((n) => '<option value="' + n + '">' + n + (n === 5 ? ' (normal)' : '') + '</option>').join('') + '</select>' +
+          '<span class="hint">For Attributes, Abilities and Disciplines. Elders and old monsters can go above 5.</span></label>' +
+      '</div>' +
+      (page.canSeeSecrets ? '<label>Who can see the sheet?<select name="sheetVisibility">' +
+          '<option value="everyone">Everyone who can see the page</option>' +
+          (isGM() || page.sheetVisibility === 'gm' ? '<option value="gm">GM only (players see the page, but not the numbers)</option>' : '') +
+        '</select></label>' : '') +
+      '<div id="sheet-edit"></div>' +
+      '<div class="row actions sticky-actions">' +
+        '<button class="btn primary" type="submit">Save sheet</button>' +
+        '<button class="btn" type="button" id="cancel-sheet">Cancel</button>' +
+        (page.sheet && (page.canSeeSecrets || page.author === state.user.username) ? '<button class="btn danger" type="button" id="remove-sheet">Remove sheet</button>' : '') +
+      '</div>' +
+    '</form>' +
+  '</div>';
+}
+
+function bindSheetEditor(pageId, query) {
+  const form = $('#sheet-form');
+  if (!form) return;
+  const page = pageById(pageId);
+  const draft = store.get(sheetDraftKey(pageId), null);
+  let sheet;
+  if (draft) sheet = cloneSheet(draft.sheet);
+  else if (page.sheet) sheet = cloneSheet(page.sheet);
+  else if (query.copy && pageById(query.copy) && pageById(query.copy).sheet) sheet = cloneSheet(pageById(query.copy).sheet);
+  else sheet = newSheet(sheetTemplate(query.template).id);
+  let visibility = draft ? draft.visibility : (page.sheetVisibility || 'everyone');
+
+  form.template.value = sheetTemplate(sheet.template).id;
+  form.maxDots.value = String(Math.max(5, Math.min(10, num(sheet.maxDots, 5))));
+  if (form.sheetVisibility) form.sheetVisibility.value = visibility;
+
+  const container = $('#sheet-edit');
+  const draw = () => { container.innerHTML = sheetHtml(sheet, 'edit'); };
+  const saveDraft = () => store.set(sheetDraftKey(pageId), { sheet: sheet, visibility: visibility });
+  draw();
+  if (query.copy && !draft) saveDraft();
+
+  form.template.addEventListener('change', () => { sheet.template = form.template.value; saveDraft(); draw(); });
+  form.maxDots.addEventListener('change', () => { sheet.maxDots = Number(form.maxDots.value); saveDraft(); draw(); });
+  if (form.sheetVisibility) form.sheetVisibility.addEventListener('change', () => { visibility = form.sheetVisibility.value; saveDraft(); });
+
+  container.addEventListener('click', (event) => {
+    const dot = event.target.closest('[data-set]');
+    const box = event.target.closest('[data-box]');
+    const add = event.target.closest('[data-add]');
+    const del = event.target.closest('[data-del]');
+    const health = event.target.closest('[data-health]');
+    const count = event.target.closest('[data-count]');
+    const addBlock = event.target.closest('[data-add-block]');
+    if (del && del.dataset.confirm && !confirm(del.dataset.confirm)) return;
+    if (addBlock) {
+      sheet.vals.blocks = (Array.isArray(sheet.vals.blocks) ? sheet.vals.blocks : []).concat([{ t: '', r: [{}] }]);
+      saveDraft();
+      draw();
+      const titles = $$('[data-path$="/t"]', container).filter((el) => /^blocks\/\d+\/t$/.test(el.dataset.path));
+      if (titles.length) titles[titles.length - 1].focus();
+      return;
+    }
+    if (dot) {
+      const v = Number(dot.dataset.v);
+      const min = Number(dot.dataset.min) || 0;
+      const current = num(getPath(sheet.vals, dot.dataset.set), min);
+      setPath(sheet.vals, dot.dataset.set, current === v ? Math.max(min, v - 1) : v);
+    } else if (box) {
+      const v = Number(box.dataset.v);
+      const filled = $$('[data-box="' + box.dataset.box + '"]', container).filter((b) => b.classList.contains('on')).length;
+      setPath(sheet.vals, box.dataset.box, filled === v ? v - 1 : v);
+    } else if (add) {
+      const list = getPath(sheet.vals, add.dataset.add);
+      setPath(sheet.vals, add.dataset.add, (Array.isArray(list) ? list : []).concat([{}]));
+    } else if (del) {
+      const list = getPath(sheet.vals, del.dataset.del) || [];
+      list.splice(Number(del.dataset.i), 1);
+    } else if (health) {
+      cycleHealth(sheet, Number(health.dataset.health));
+    } else if (count) {
+      const section = sheetSections(sheet).find((s) => s.key === count.dataset.count);
+      const max = counterMax(sheet, section);
+      const cur = Math.min(max, num(getPath(sheet.vals, section.key + '/c'), max));
+      setPath(sheet.vals, section.key + '/c', Math.max(0, Math.min(max, cur + Number(count.dataset.step))));
+    } else {
+      return;
+    }
+    event.preventDefault();
+    saveDraft();
+    draw();
+    if (add) {
+      const inputs = $$('[data-path^="' + add.dataset.add + '/"]', container);
+      if (inputs.length) inputs[inputs.length - (add.dataset.add === 'merits' ? 2 : 1)].focus();
+    }
+  });
+
+  const onInput = (event) => {
+    const el = event.target.closest('[data-path]');
+    if (!el) return;
+    let value = el.value;
+    if (el.dataset.num) value = value.trim() === '' ? '' : (isFinite(Number(value)) ? Number(value) : value);
+    setPath(sheet.vals, el.dataset.path, value);
+    saveDraft();
+  };
+  container.addEventListener('input', onInput);
+  // Some numbers change what is drawn (Generation sets the blood pool, a tracker's maximum sets its boxes).
+  container.addEventListener('change', (event) => {
+    const el = event.target.closest('[data-path]');
+    if (el && (el.dataset.path === 'generation' || /\/(max|m)$/.test(el.dataset.path))) draw();
+  });
+
+  on('#discard-sheet-draft', 'click', () => { store.remove(sheetDraftKey(pageId)); render(); });
+
+  on('#cancel-sheet', 'click', () => {
+    if (store.get(sheetDraftKey(pageId), null) && !confirm('Throw away your changes to this sheet?')) return;
+    store.remove(sheetDraftKey(pageId));
+    go('#/p/' + encodeURIComponent(pageId));
+  });
+
+  on('#remove-sheet', 'click', async () => {
+    if (state.offline) { toast('You are offline. Try again when you have internet.', true); return; }
+    if (!confirm('Remove the character sheet from "' + page.title + '"? The page itself stays. This cannot be undone.')) return;
+    try {
+      const saved = await api('saveSheet', { pageId: pageId, sheet: null });
+      delete sheetSaves[pageId];
+      store.set('kc_pending_sheets', sheetSaves);
+      store.remove(sheetDraftKey(pageId));
+      rememberPage(saved);
+      toast('Sheet removed.');
+      go('#/p/' + encodeURIComponent(pageId));
+    } catch (e) { toast(e.message, true); }
+  });
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (state.offline) { toast('You are offline. Your sheet is kept on this phone; save again when you have internet.', true); return; }
+    const button = $('button[type=submit]', form);
+    button.disabled = true;
+    button.textContent = 'Saving…';
+    try {
+      const saved = await api('saveSheet', { pageId: pageId, sheet: pruneSheet(sheet), visibility: visibility });
+      delete sheetSaves[pageId];
+      store.set('kc_pending_sheets', sheetSaves);
+      rememberPage(saved);
+      store.remove(sheetDraftKey(pageId));
+      toast('Sheet saved.');
+      go('#/p/' + encodeURIComponent(pageId));
+    } catch (e) {
+      if (e instanceof NetworkError) setOffline(true);
+      toast(e.message + ' Your sheet is kept on this phone.', true);
+      button.disabled = false;
+      button.textContent = 'Save sheet';
+    }
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Screen: search                                                      */
 /* ------------------------------------------------------------------ */
 function searchPages(query, category) {
@@ -1890,7 +3009,7 @@ function searchPages(query, category) {
     const tags = tagList(page).map((t) => t.toLowerCase());
     const text = plainText(page.content).toLowerCase();
     const notes = page.canSeeSecrets ? plainText(page.gmNotes).toLowerCase() : '';
-    const extra = ((page.status || '') + ' ' + ((realityById(page.realityId) || {}).name || '')).toLowerCase();
+    const extra = ((page.status || '') + ' ' + ((realityById(page.realityId) || {}).name || '') + ' ' + sheetSearchText(page)).toLowerCase();
     let score = 0;
     for (const word of words) {
       if (word.startsWith('#') && word.length > 1) {
@@ -2046,6 +3165,7 @@ function viewSettings() {
         '<li><strong>GM notes</strong> on a page are never shown to other players, even after the page is revealed.</li>' +
         '<li>The same rules apply to <strong>timeline events</strong> and <strong>realities</strong>. A hidden reality shows to players as "Unknown reality".</li>' +
         '<li><strong>Pictures</strong> follow their page: only people who can see the page see its pictures.</li>' +
+        '<li><strong>Character sheets</strong> follow their page too. The GM can also make a sheet <em>GM only</em>: players then see the page, but not the numbers.</li>' +
       '</ul>' +
     '</section>' +
   '</div>';
